@@ -1,0 +1,9 @@
+# Known-safe fixture/example values, not real secrets. Each entry is a
+# gitleaks fingerprint (commit:file:rule:line) from an actual scan — see
+# https://github.com/gitleaks/gitleaks#gitleaksignore
+f5d1a971efe84ab02eb088540d269beb01266ba3:README.md:generic-api-key:37
+f5d1a971efe84ab02eb088540d269beb01266ba3:spec/contract/operations_contract_spec.rb:generic-api-key:148
+f5d1a971efe84ab02eb088540d269beb01266ba3:spec/contract/operations_contract_spec.rb:generic-api-key:156
+f5d1a971efe84ab02eb088540d269beb01266ba3:spec/contract/openapi.yaml:generic-api-key:829
+ab93c7dc0b60881b382f4ffc958daf4d93985853:spec/unit/object_spec.rb:generic-api-key:75
+ab93c7dc0b60881b382f4ffc958daf4d93985853:spec/unit/object_spec.rb:generic-api-key:76

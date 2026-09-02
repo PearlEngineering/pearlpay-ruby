@@ -1,0 +1,3088 @@
+# This file is the canonical source for the /v1 API contract.
+#
+# The Postman collection and environment next to it are GENERATED from this file.
+# After editing this spec, regenerate and commit them in the same change:
+#
+#   npm exec --yes --package=openapi-to-postmanv2@6.3.3 -- \
+#     node script/regenerate_postman_from_openapi.mjs
+#
+# The `api_docs_drift` CI job (.github/workflows/ci.yml) fails the PR otherwise.
+openapi: 3.1.0
+
+info:
+  title: PearlPay API
+  version: "2026-06-25"
+  description: |
+    The PearlPay API enables you to accept payments (cashin) and send disbursements
+    (cashout) programmatically. Build reliable payment flows for Philippine customers
+    with support for GCash, Maya, cards, InstaPay, and PESONet.
+
+    Design goals align with common **Stripe-caliber** API conventions: Bearer authentication,
+    typed JSON resources (`object`), integer amounts in the smallest currency unit, dated
+    versioning (`X-Api-Version`), idempotency for `POST`, signed webhooks, and structured
+    errors with stable `code` strings. See [design and Stripe parity](./design-and-stripe-parity.md)
+    for a detailed comparison.
+
+    ## Base URLs
+
+    | Environment | Base URL |
+    |-------------|----------|
+    | Production  | `https://api.pearlpay.io/v1` |
+    | Staging     | `https://staging.api.pearlpay.io/v1` |
+    | Local development | `http://localhost:3000/v1` (default server when opening `/api-docs` while running `bin/rails server`) |
+
+    ## Authentication
+
+    All requests require a Bearer token. Use your secret API key from the
+    PearlPay Dashboard (**Settings → API Keys**).
+
+    ```
+    Authorization: Bearer sk_live_<your_key>
+    ```
+
+    Use `sk_test_<key>` in sandbox. Keys are scoped — see [Authentication](#section/Authentication).
+
+    ## Amounts
+
+    All `amount` fields in **responses** are integers in centavos (smallest currency unit).
+    `PHP 1,500.00 = 150000`. An `amount_decimal` string is included for display.
+
+    **Request** bodies accept `amount` as an **integer in centavos (minor units) only** —
+    `150000` for `PHP 1,500.00`. This matches Stripe and keeps every amount input on the
+    platform consistent.
+
+    Decimal values are **rejected** with `422 invalid_parameter` — both JSON floats
+    (`1500.00`) and decimal strings (`"1500.00"`) — because binary floating point cannot
+    represent money exactly. The error includes a hint with the integer to send
+    (e.g. `Send 150050 for 1,500.50 PHP`). A digit-only string (`"150000"`) is accepted as
+    minor units.
+
+    ## Fees
+
+    Fees are still computed server-side (per `ProviderCapability`) and applied to the amount the
+    customer pays, but the **API resources no longer break them out**. Payment and disbursement
+    responses are intentionally minimal — `amount` is the **total** amount, and the fee/settlement
+    detail (facilitation fee, WHT, platform fees, net settlement, the calculator snapshot) lives in
+    the **Dashboard** and the **wallet balance** (`GET /wallet/balance`) rather than on each resource.
+
+    > A facilitation fee may still be supplied as an **input** on `POST /payments`
+    > (`facilitation_fee`) when no routed capability supplies one; it just is not echoed back on the
+    > response object.
+
+    ## Versioning
+
+    Pin a specific API version with the `X-Api-Version: YYYY-MM-DD` request header.
+    If omitted, the server uses its default (**`2026-04-14`** in this codebase) for
+    serializers and backwards-compatible parsing.
+
+    ## Idempotency
+
+    **`Idempotency-Key` is required** on `POST /payments`, `POST /disbursements`,
+    `POST /payment_links`, and `POST /payment_links/{id}/checkout_url`.
+    Use it to safely retry without creating duplicates. Keys expire after 24 hours.
+    Retry with the **same** key only when no response was received (or after a `429`);
+    a received error response is cached under the key for 24 hours, so a fresh attempt
+    after a `5xx` needs a **new** key.
+
+    ## Request signing (HMAC)
+
+    **`POST /disbursements` requires** `X-Request-Timestamp`, `X-Request-Nonce`, and
+    `X-Signature` ([Request signing guide](/api-docs/guides/request-signing)). `POST /payments` uses signing only when
+    your API key has `require_signing`, or when you send these headers (they are then verified).
+
+  externalDocs:
+    description: Request signing (HMAC) — full guide
+    url: /api-docs/guides/request-signing
+
+  contact:
+    name: PearlPay Developer Support
+    email: developers@pearlpay.ph
+    url: https://developers.pearlpay.io
+  license:
+    name: MIT
+    identifier: MIT
+
+servers:
+  - url: https://api.pearlpay.io/v1
+    description: Production
+  - url: https://staging.api.pearlpay.io/v1
+    description: Staging
+
+tags:
+  - name: API Keys
+    description: |
+      Rotate per-key request signing secrets (`whsig_…`) used for HMAC verification.
+      Does not rotate the bearer API key (`sk_live_` / `sk_test_`).
+
+      Keys are addressed by their **API key ID** (`ak_live_…` / `ak_test_…`) — the opaque,
+      non-secret identifier shown in the Dashboard under **Settings → API Keys**. This is
+      distinct from the bearer secret and cannot be used to authenticate requests.
+
+  - name: Payments
+    description: |
+      Accept incoming payments from customers via e-wallet, card, or online banking.
+  - name: Disbursements
+    description: |
+      Send funds to recipients via **InstaPay** (near-real-time) or **PESONet** (batch clearing).
+  - name: Disbursement Rails
+    description: |
+      Discover the transfer rails (`instapay`, `pesonet`, `rtgs`) and the partner institutions
+      reachable on each rail. Use `partners[].code` as `partner_code` when creating disbursements.
+  - name: Partners
+    description: Active bank and e-wallet partners available for disbursements.
+  - name: Wallets
+    description: Your PearlPay wallet balance.
+  - name: Webhook Endpoints
+    description: Register HTTPS endpoints to receive real-time event notifications.
+  - name: Payment Links
+    description: |
+      Reusable checkout configurations with shareable `/pay/pl_*` URLs.
+      Creates payments via the same pipeline as `POST /v1/payments`.
+
+security:
+  - BearerAuth: []
+
+paths:
+
+  # ────────────────────────────────────────────────────────────────
+  # PAYMENTS
+  # ────────────────────────────────────────────────────────────────
+
+  /payments:
+    post:
+      operationId: createPayment
+      tags: [Payments]
+      summary: Create a payment
+      description: |
+        Creates a new payment. Always returns the full `Payment` object with status `pending`.
+
+        Supported `payment_channel` values are `qrph`, `gcash`, `maya`, `card`, `bpi`,
+        `grabpay`, `shopeepay`, `ub online`, `instapay`, `cebl`, and `plwn` (subject to your
+        provider configuration).
+        The response includes a `checkout_url` — a PearlPay-hosted QR display page for `qrph`, a
+        PearlPay-hosted card page for `card`, or a redirect to the provider's hosted checkout for
+        the others.
+
+        **`Idempotency-Key` is required.** Use it to safely retry without creating duplicate
+        payments. The `merchant_reference_id` is also a deduplication key — submitting the
+        same value twice returns `409 Conflict`.
+
+        Returns `422` (`no_available_provider`) if no provider account is configured for the
+        requested `payment_channel`.
+
+        If checkout URL generation fails with a **transient** provider/network error, this still
+        returns `201` with `status: "pending"` and `checkout_url: null` — an internal retry
+        (with provider failover) runs automatically in the background. Poll
+        `GET /v1/payments/{id}` until `checkout_url` is populated, or the payment is reaped
+        `failed` once it expires if every retry is exhausted. A **non-retryable** checkout
+        failure fails the payment immediately and maps to a status by cause: `502`
+        (`upstream_failure`) when the provider rejects the request outright, `500`
+        (`provider_configuration_error`) for a misconfigured provider account, or `422`
+        (`provider_unavailable`) for an inactive merchant/provider account. In every case the
+        payment record is created — on a non-retryable failure it is marked `failed`.
+
+        Optional HMAC headers (`X-Request-Timestamp`, `X-Request-Nonce`, `X-Signature`) are
+        required when the API key has `require_signing`, or verified when sent. See [Request signing](/api-docs/guides/request-signing).
+
+        **Required API key scope:** `payments:write`.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/RequestTimestamp'
+        - $ref: '#/components/parameters/RequestNonce'
+        - $ref: '#/components/parameters/RequestSignature'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePaymentRequest'
+            examples:
+              qrph:
+                summary: QRPH (integer centavos amount)
+                value:
+                  merchant_reference_id: ORDER-2026-00125
+                  amount: 200000
+                  currency: PHP
+                  payment_channel: qrph
+                  customer:
+                    first_name: Ana
+                    last_name: Reyes
+                    email: ana.reyes@email.com
+                    mobile: "+639191234567"
+                  callback_url: "https://merchant.ph/webhooks/pearlpay"
+                  redirect_url: "https://merchant.ph/checkout/return"
+                  metadata:
+                    order_id: "ORDER-2026-00125"
+              qrph_minor_units_string:
+                summary: QRPH (digit-only string centavos amount)
+                value:
+                  merchant_reference_id: ORDER-2026-00126
+                  amount: "200000"
+                  payment_channel: qrph
+      responses:
+        '201':
+          description: Payment created.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Idempotent-Replayed:
+              $ref: '#/components/headers/IdempotentReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+              examples:
+                pending_qrph:
+                  summary: Pending QRPH payment
+                  value:
+                    id: pay_01JRXYZ1234QRPHY
+                    object: payment
+                    merchant_reference_id: ORDER-2026-00125
+                    status: pending
+                    amount: 200000
+                    amount_decimal: "2000.00"
+                    currency: PHP
+                    checkout_url: "https://pay.pearlpay.ph/pay/chk_01JRXYZ1234QRPHY"
+                    created_at: "2026-04-27T08:30:00Z"
+                pending_retry_qrph:
+                  summary: Pending QRPH payment — checkout generation retrying in the background
+                  value:
+                    id: pay_01JRXYZ1234QRPHZ
+                    object: payment
+                    merchant_reference_id: ORDER-2026-00127
+                    status: pending
+                    amount: 200000
+                    amount_decimal: "2000.00"
+                    currency: PHP
+                    checkout_url: null
+                    created_at: "2026-04-27T08:30:00Z"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+
+    get:
+      operationId: listPayments
+      tags: [Payments]
+      summary: List payments
+      description: |
+        Returns a paginated list of payments, sorted newest first.
+        Default date range is the past 3 months if `from`/`to` are omitted.
+        Unparseable `from`/`to` values silently fall back to those defaults.
+
+        **Required API key scope:** `payments:read`.
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PerPageParam'
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date
+          description: "Start date (inclusive, `YYYY-MM-DD`). Default: 3 months ago."
+          example: "2026-01-01"
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date
+          description: "End date (inclusive, `YYYY-MM-DD`). Default: today."
+          example: "2026-04-14"
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/PaymentStatus'
+          description: |
+            Filter by payment status. Accepts a single value or a comma-separated list
+            (e.g. `status=succeeded,failed`). Unknown values return `400 invalid_parameter`.
+          example: succeeded
+        - name: payment_channel
+          in: query
+          schema:
+            type: string
+          description: "Filter by payment channel slug (e.g. `qrph`, `gcash`, `maya`, `bpi`) — any value accepted by `payment_channel` on create."
+          example: qrph
+        - name: query
+          in: query
+          schema:
+            type: string
+          description: "Full-text search on `merchant_reference_id`, name, email, or mobile."
+          example: ana.reyes@email.com
+      responses:
+        '200':
+          description: Paginated list of payments.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /payments/{id}:
+    get:
+      operationId: retrievePayment
+      tags: [Payments]
+      summary: Retrieve a payment
+      description: Retrieves a payment by its PearlPay ID (`pay_xxx`).
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: "The payment's PearlPay ID (e.g., `pay_01JRXYZ1234ABCDEF`)."
+          example: pay_01JRXYZ1234ABCDEF
+      responses:
+        '200':
+          description: Payment object.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ────────────────────────────────────────────────────────────────
+  # DISBURSEMENTS
+  # ────────────────────────────────────────────────────────────────
+
+  /disbursements:
+    post:
+      operationId: createDisbursement
+      tags: [Disbursements]
+      summary: Create a disbursement
+      description: |
+        Sends funds to a recipient via InstaPay or RTGS (near-real-time) or PESONet (batch clearing).
+
+        **Always provide an `Idempotency-Key`.** Disbursements cannot be recalled once
+        submitted. Idempotency prevents double-payouts on network retries.
+
+        The `merchant_reference_id` is a permanent deduplication key. Submitting the same
+        value again returns **`200 OK` with the original disbursement** (no duplicate payout
+        is created), even without an `Idempotency-Key`. `409 Conflict` is reserved for
+        `Idempotency-Key` conflicts (same key, different parameters, or still in flight).
+
+        Identify the destination institution with **`partner_code`** (canonical `code` or per-rail
+        `alias_code` from `GET /disbursements/rails/{code}/partners`). The legacy **`bank_code`** field is still
+        accepted but deprecated; requests using it receive a `Deprecation` response header
+        (sunset 2026-12-01).
+
+        **HMAC signing is mandatory:** include `X-Request-Timestamp`, `X-Request-Nonce`, and
+        `X-Signature` ([Request signing](/api-docs/guides/request-signing)). Missing headers return `400`.
+
+        **Required API key scope:** `disbursements:write`.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/DisbursementRequestTimestamp'
+        - $ref: '#/components/parameters/DisbursementRequestNonce'
+        - $ref: '#/components/parameters/DisbursementRequestSignature'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDisbursementRequest'
+            examples:
+              instapay:
+                summary: InstaPay disbursement
+                value:
+                  merchant_reference_id: PAYOUT-2026-00456
+                  amount: 500000
+                  currency: PHP
+                  rail: instapay
+                  partner_code: BDO
+                  account_number: "1234567890"
+                  account_name: Jose Reyes
+                  sender:
+                    name: Acme Corp
+                  callback_url: "https://merchant.ph/webhooks/pearlpay"
+                  metadata:
+                    employee_id: EMP-001
+              pesonet:
+                summary: PESONet disbursement
+                value:
+                  merchant_reference_id: PAYOUT-2026-00457
+                  amount: 2500000
+                  currency: PHP
+                  rail: pesonet
+                  partner_code: MBTC
+                  account_number: "9876543210"
+                  account_name: Ana Villanueva
+                  sender:
+                    name: Acme Corp
+                  callback_url: "https://merchant.ph/webhooks/pearlpay"
+      responses:
+        '201':
+          description: Disbursement created and queued for processing.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Idempotent-Replayed:
+              $ref: '#/components/headers/IdempotentReplayed'
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Disbursement'
+              examples:
+                queued:
+                  summary: Newly queued disbursement
+                  value:
+                    id: dis_01JRXYZ5678GHIJKL
+                    object: disbursement
+                    merchant_reference_id: PAYOUT-2026-00456
+                    status: queued
+                    amount: 500000
+                    amount_decimal: "5000.00"
+                    currency: PHP
+                    created_at: "2026-04-14T08:30:00Z"
+        '200':
+          description: |
+            The `merchant_reference_id` was already used — the **original** disbursement is
+            returned and no new payout is created. Also returned when an `Idempotency-Key`
+            replay resolves to a previously completed request.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Idempotent-Replayed:
+              $ref: '#/components/headers/IdempotentReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Disbursement'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    get:
+      operationId: listDisbursements
+      tags: [Disbursements]
+      summary: List disbursements
+      description: |
+        Returns a paginated list of disbursements, sorted newest first.
+        Default date range is the past 3 months if `from`/`to` are omitted.
+
+        **Required API key scope:** `disbursements:read`.
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PerPageParam'
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date
+          description: "Start date (inclusive). Default: 3 months ago."
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date
+          description: "End date (inclusive). Default: today."
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/DisbursementStatus'
+          description: |
+            Filter by disbursement status. Accepts a single value or a comma-separated list
+            (e.g. `status=paid,returned`). Unknown values return `400 invalid_parameter`.
+          example: paid
+        - name: rail
+          in: query
+          schema:
+            type: string
+            enum: [instapay, pesonet, rtgs]
+          description: Filter by disbursement rail.
+          example: instapay
+        - name: bank_code
+          in: query
+          schema:
+            type: string
+          description: Filter by recipient partner/bank code (the stored `bank_code` value).
+          example: BDO
+      responses:
+        '200':
+          description: Paginated list of disbursements.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DisbursementList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /disbursements/{id}:
+    get:
+      operationId: retrieveDisbursement
+      tags: [Disbursements]
+      summary: Retrieve a disbursement
+      description: Retrieves a disbursement by its PearlPay ID (`dis_xxx`).
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: "The disbursement's PearlPay ID (e.g., `dis_01JRXYZ5678GHIJKL`)."
+          example: dis_01JRXYZ5678GHIJKL
+      responses:
+        '200':
+          description: Disbursement object.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Disbursement'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ────────────────────────────────────────────────────────────────
+  # DISBURSEMENT RAILS
+  # ────────────────────────────────────────────────────────────────
+
+  /disbursements/rails:
+    get:
+      operationId: listDisbursementRails
+      tags: [Disbursement Rails]
+      summary: List transfer rails
+      description: |
+        Returns the active transfer rails available for disbursements. Use `code` as the
+        `rail` value when creating disbursements.
+
+        **Required API key scope:** `disbursements:read`.
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: List of active transfer rails.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransferRailList'
+              example:
+                object: list
+                rails:
+                  - code: instapay
+                    name: InstaPay
+                    settlement_behavior: real_time
+                    max_amount: "50000.00"
+                  - code: pesonet
+                    name: PESONet
+                    settlement_behavior: batch
+                  - code: rtgs
+                    name: RTGS
+                    settlement_behavior: rtgs
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /disbursements/rails/{code}/partners:
+    get:
+      operationId: listRailPartners
+      tags: [Disbursement Rails]
+      summary: List partners on a rail
+      description: |
+        Returns the partner institutions (banks and e-wallets) reachable on the given rail.
+        Use `partners[].code` or `partners[].alias_code` as the `partner_code` field when creating disbursements.
+
+        Cache this list — it changes infrequently. We recommend refreshing daily.
+
+        **Required API key scope:** `disbursements:read`.
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - name: code
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [instapay, pesonet, rtgs]
+          description: Transfer rail code.
+          example: instapay
+      responses:
+        '200':
+          description: Partners reachable on this rail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RailPartnerList'
+              example:
+                object: list
+                rail: instapay
+                rail_name: InstaPay
+                settlement_behavior: real_time
+                partners:
+                  - code: BDO
+                    name: BDO Unibank
+                    partner_type: bank
+                  - code: BPI
+                    name: Bank of the Philippine Islands
+                    partner_type: bank
+                  - code: GCSH
+                    name: GCash
+                    partner_type: ewallet
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ────────────────────────────────────────────────────────────────
+  # PARTNERS
+  # ────────────────────────────────────────────────────────────────
+
+  /partners:
+    get:
+      operationId: listPartners
+      tags: [Partners]
+      summary: List available partners (legacy)
+      description: |
+        Returns the active bank and e-wallet partners for the given disbursement channel.
+
+        **Superseded by `GET /disbursements/rails/{code}/partners`**, which returns the
+        canonical `partner_code` values. This endpoint remains available for integrations
+        built against `bank_code`.
+
+        Cache this list — it changes infrequently. We recommend refreshing daily.
+
+        **Required API key scope:** `disbursements:read`.
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - name: channel
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [instapay, pesonet]
+          description: "Disbursement channel (`instapay` or `pesonet`)."
+          example: instapay
+      responses:
+        '200':
+          description: List of available partners.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartnerList'
+              examples:
+                instapay_partners:
+                  summary: InstaPay partners (sample)
+                  value:
+                    object: list
+                    data:
+                      - bank_code: BDO
+                        bank_name: BDO Unibank
+                        active: true
+                      - bank_code: BPI
+                        bank_name: Bank of the Philippine Islands
+                        active: true
+                      - bank_code: MBTC
+                        bank_name: Metrobank
+                        active: true
+                      - bank_code: UBPA
+                        bank_name: UnionBank of the Philippines
+                        active: true
+                      - bank_code: GCSH
+                        bank_name: GCash
+                        active: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ────────────────────────────────────────────────────────────────
+  # WALLETS
+  # ────────────────────────────────────────────────────────────────
+
+  /wallets/balance:
+    get:
+      operationId: getWalletBalance
+      tags: [Wallets]
+      summary: Get wallet balance
+      description: |
+        Returns per-ledger wallet balances for your merchant account.
+
+        Each bucket (`payments`, `disbursements`) reports `available`, `pending`, and
+        `reserved` as **decimal strings** (e.g. `"50000.00"`). Amounts are formatted for
+        display — use integer centavos from payment/disbursement resources for arithmetic.
+
+        **Required API key scope:** `disbursements:read`.
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: Current wallet balance.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WalletBalance'
+              example:
+                payments:
+                  currency: PHP
+                  available: "45000.00"
+                  pending: "1500.00"
+                  reserved: "0.00"
+                disbursements:
+                  currency: PHP
+                  available: "50000.00"
+                  pending: "500.00"
+                  reserved: "2000.00"
+                updated_at: "2026-04-14T08:45:00Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ────────────────────────────────────────────────────────────────
+  # WEBHOOK ENDPOINTS
+  # ────────────────────────────────────────────────────────────────
+
+  /webhook_endpoints:
+    post:
+      operationId: createWebhookEndpoint
+      tags: [Webhook Endpoints]
+      summary: Create a webhook endpoint
+      description: |
+        Registers an HTTPS URL to receive real-time event notifications.
+
+        The response includes a `signing_secret` (prefixed `whsec_`). **Store it securely
+        — it is shown only once and cannot be retrieved again.** Use it to verify the
+        HMAC-SHA256 signature on every incoming event.
+
+        Subscribing with `["*"]` keeps the endpoint subscribed to every event type, including
+        ones added to the platform later — no re-create or update needed. `enabled_events`
+        reads back as the full resolved list.
+
+        **Required API key scope:** `payments:write`.
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWebhookEndpointRequest'
+            example:
+              url: "https://merchant.ph/webhooks/pearlpay"
+              enabled_events:
+                - payment.succeeded
+                - payment.failed
+                - disbursement.paid
+                - disbursement.failed
+                - disbursement.returned
+              description: Production webhook
+      responses:
+        '201':
+          description: Webhook endpoint created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEndpoint'
+              example:
+                id: we_9f3c8a2b1d4e5f6a7b8c9d0e
+                object: webhook_endpoint
+                url: "https://merchant.ph/webhooks/pearlpay"
+                status: enabled
+                enabled_events:
+                  - payment.succeeded
+                  - payment.failed
+                  - disbursement.paid
+                  - disbursement.failed
+                  - disbursement.returned
+                description: Production webhook
+                signing_secret: "whsec_test_fixture_not_a_real_secret..."
+                created_at: "2026-04-14T08:00:00Z"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+    get:
+      operationId: listWebhookEndpoints
+      tags: [Webhook Endpoints]
+      summary: List webhook endpoints
+      description: |
+        Returns all webhook endpoints for your account, newest first (not paginated) —
+        including endpoints that are currently `suspended` or `disabled`, so you can find the
+        `id` needed to reactivate one. `signing_secret` is always `null` on list responses —
+        it is shown only on creation.
+
+        **Required API key scope:** `payments:read`.
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+      responses:
+        '200':
+          description: List of webhook endpoints.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEndpointList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /webhook_endpoints/{id}/activate:
+    post:
+      operationId: activateWebhookEndpoint
+      tags: [Webhook Endpoints]
+      summary: Activate a webhook endpoint
+      description: |
+        Re-enables a webhook endpoint and clears any automatic delivery suspension, without
+        changing its URL, subscriptions, or signing secret. Events still awaiting retry are
+        attempted again on the next retry sweep.
+
+        Use this after fixing a handler that caused PearlPay to suspend deliveries (see
+        `status: suspended`), or to switch a `disabled` endpoint back on. It is safe to call on
+        an endpoint that is already `enabled`.
+
+        **Required API key scope:** `webhooks:manage`.
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            example: we_9f3c8a2b1d4e5f6a7b8c9d0e
+          description: Webhook endpoint ID (`we_…`), from the Dashboard or list/create API response.
+      responses:
+        '200':
+          description: The reactivated webhook endpoint.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEndpoint'
+              example:
+                id: we_9f3c8a2b1d4e5f6a7b8c9d0e
+                object: webhook_endpoint
+                url: "https://merchant.ph/webhooks/pearlpay"
+                status: enabled
+                enabled_events:
+                  - payment.succeeded
+                  - payment.failed
+                description: Production webhook
+                signing_secret: null
+                deliveries_resume_at: null
+                created_at: "2026-04-14T08:00:00Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: |
+            The endpoint's URL is no longer acceptable — typically its host now resolves to a
+            private, loopback, or link-local address. The endpoint is left exactly as it was;
+            nothing is reactivated or un-suspended.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: invalid_parameter
+                  message: "Url must not point to a private, loopback, or link-local address"
+                  request_id: 9f6f63ce-7a45-4f9b-9c1d-2a52a113b8d0
+
+  /webhook_endpoints/{id}/rotate_signing_secret:
+    post:
+      operationId: rotateWebhookSigningSecret
+      tags: [Webhook Endpoints]
+      summary: Rotate webhook signing secret
+      description: |
+        Issues a new `whsec_…` signing secret for the webhook endpoint. The previous secret
+        is invalidated immediately — update your handler before rotating, or deliveries will
+        fail verification.
+
+        **Required API key scope:** `webhooks:manage`.
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            example: we_9f3c8a2b1d4e5f6a7b8c9d0e
+          description: Webhook endpoint ID (`we_…`), from the Dashboard or list/create API response.
+      responses:
+        '200':
+          description: New signing secret (shown once).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [object, webhook_endpoint_id, signing_secret, message]
+                properties:
+                  object:
+                    type: string
+                    enum: [webhook_signing_secret]
+                  webhook_endpoint_id:
+                    type: string
+                    description: The endpoint's public identifier (`we_…`).
+                    example: we_9f3c8a2b1d4e5f6a7b8c9d0e
+                  signing_secret:
+                    type: string
+                    description: Store securely; not shown again.
+                    example: whsec_test_fixture_not_a_real_secret
+                  message:
+                    type: string
+                    example: "Store this secret securely; it is shown once."
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ────────────────────────────────────────────────────────────────
+  # PAYMENT LINKS
+  # ────────────────────────────────────────────────────────────────
+
+  /payment_links:
+    post:
+      operationId: createPaymentLink
+      tags: [Payment Links]
+      summary: Create a payment link
+      description: |
+        Creates a reusable checkout configuration. Returns a durable link URL (`/pay/pl_*`).
+
+        **Required API key scope:** `payment_links:write`.
+        **Required header:** `Idempotency-Key`.
+        **Environment** is inherited from the API key (`sk_test_` → test).
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePaymentLinkRequest'
+      responses:
+        '201':
+          description: Payment link created.
+          headers:
+            Idempotent-Replayed:
+              $ref: '#/components/headers/IdempotentReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentLink'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    get:
+      operationId: listPaymentLinks
+      tags: [Payment Links]
+      summary: List payment links
+      description: |
+        Returns your payment links, newest first, using cursor pagination
+        (`limit` / `starting_after`, Stripe-style) rather than page numbers.
+
+        **Required API key scope:** `payment_links:read`.
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - name: status
+          in: query
+          schema:
+            type: string
+          description: |
+            Filter by link status. Accepts a single value or a comma-separated list from
+            `active`, `disabled`, `expired`, `exhausted` (e.g. `status=active,disabled`).
+            Unknown values return `400 invalid_parameter`.
+          example: active
+        - name: environment
+          in: query
+          schema:
+            type: string
+            enum: [live, test]
+          description: Filter by the environment of the API key that created the link.
+        - name: channel
+          in: query
+          schema:
+            type: string
+          description: |
+            Filter to links pinned to this payment channel slug (e.g. `gcash`, `qrph`).
+            Matches `channel_mode: fixed` links only; an unknown slug returns an empty list.
+          example: gcash
+        - name: created_at[gte]
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: "Only links created at or after this time (ISO 8601). Unparseable values are ignored."
+          example: "2026-01-01T00:00:00Z"
+        - name: created_at[lte]
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: "Only links created at or before this time (ISO 8601). Unparseable values are ignored."
+          example: "2026-04-14T23:59:59Z"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 25
+          description: "Results per page (1–100, default 25). Values above 100 are clamped."
+        - name: starting_after
+          in: query
+          schema:
+            type: string
+          description: |
+            Cursor for pagination — a payment link ID (`plink_…`). Returns links created
+            before it. Use `meta.next_starting_after` from the previous page.
+          example: plink_01JRXYZ1234ABCDEF
+      responses:
+        '200':
+          description: List of payment links.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentLinkList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /payment_links/{id}:
+    get:
+      operationId: getPaymentLink
+      tags: [Payment Links]
+      summary: Retrieve a payment link
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            example: plink_01JRXYZ1234ABCDEF
+      responses:
+        '200':
+          description: Payment link object.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentLink'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      operationId: updatePaymentLink
+      tags: [Payment Links]
+      summary: Update a payment link
+      description: |
+        Partial update. **Required API key scope:** `payment_links:write`.
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePaymentLinkRequest'
+      responses:
+        '200':
+          description: Updated payment link.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentLink'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /payment_links/{id}/disable:
+    post:
+      operationId: disablePaymentLink
+      tags: [Payment Links]
+      summary: Disable a payment link
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Disabled payment link.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentLink'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /payment_links/{id}/clone:
+    post:
+      operationId: clonePaymentLink
+      tags: [Payment Links]
+      summary: Clone a payment link
+      description: |
+        Duplicates link configuration with a new token and public id. Body is optional —
+        omit it to copy the source link's configuration unchanged.
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClonePaymentLinkRequest'
+      responses:
+        '201':
+          description: Cloned payment link.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentLink'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /payment_links/{id}/checkout_url:
+    post:
+      operationId: createPaymentLinkCheckoutUrl
+      tags: [Payment Links]
+      summary: Generate checkout URL from a payment link
+      description: |
+        Creates a Payment + CheckoutSession from link configuration.
+        Returns a session checkout URL (HMAC token), not the link URL.
+
+        **Required header:** `Idempotency-Key`.
+        **Required body field:** `merchant_reference_id`. `amount` is additionally required
+        for variable-amount links, and `channel` for links whose `channel_mode` is `any`
+        (both are ignored — the link's configuration wins — otherwise).
+
+        **Single-use links resolve to one payment.** If a single-use link already has a live
+        (pending/processing) checkout session, this returns `200` with that existing session's
+        payment and URL instead of creating another payment.
+
+        This `amount` goes through the same strict `POST /v1/payments` parser
+        (`AmountInput`) — unlike the payment link's own `create`/`update`/`clone` amount
+        fields, decimals are **rejected** here.
+
+        **Live keys only.** This endpoint creates a real payment against a real provider
+        account, so a `sk_test_` key is rejected with `403 test_key_not_permitted` — the same
+        rule as `POST /v1/payments`. A payment link's `environment` records which key created
+        it; it does not sandbox the money movement. Creating, listing, updating, cloning and
+        disabling links remain available to test keys.
+
+        Note this guard covers the API only: a link created with a test key still yields a
+        public `/pay/pl_…` URL, and a customer opening that URL creates a real payment through
+        hosted checkout. A link's `environment` is a label, not a sandbox — never share a
+        test-mode link.
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentLinkCheckoutUrlRequest'
+      responses:
+        '201':
+          description: Checkout session created.
+          headers:
+            Idempotent-Replayed:
+              $ref: '#/components/headers/IdempotentReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentLinkCheckoutUrlResponse'
+        '200':
+          description: |
+            The single-use link already had a live checkout session, so that existing session
+            was returned instead of creating a new payment.
+
+            Separately, an `Idempotency-Key` replay always echoes the **original** response —
+            its status code (`201` or `200`) and body — with `Idempotent-Replayed: true`; a
+            replay is not unconditionally `200`.
+          headers:
+            Idempotent-Replayed:
+              $ref: '#/components/headers/IdempotentReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentLinkCheckoutUrlResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          description: |
+            Link no longer accepts payments. Codes: `payment_link_disabled`,
+            `payment_link_expired`, `payment_link_exhausted`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: payment_link_expired
+                  message: "Payment link has expired"
+                  request_id: 9f6f63ce-7a45-4f9b-9c1d-2a52a113b8d0
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  # ────────────────────────────────────────────────────────────────
+  # API KEYS (signing secret rotation)
+  # ────────────────────────────────────────────────────────────────
+
+  /api_keys/{id}/rotate_signing_secret:
+    post:
+      operationId: rotateSigningSecret
+      tags: [API Keys]
+      summary: Rotate request signing secret
+      description: |
+        Issues a new `whsig_…` signing secret for HMAC request signing. The previous secret
+        is invalidated immediately. Requires API key scope `payments:write` or `disbursements:write`.
+
+        Does **not** rotate the bearer token (`sk_live_` / `sk_test_`). Create a new API key in
+        the Dashboard to rotate the bearer credential.
+      parameters:
+        - $ref: '#/components/parameters/ApiVersion'
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            example: ak_live_9f3c8a2b1d4e5f6a7b8c9d0e
+          description: PearlPay API key ID (from the Dashboard or key list), e.g. `ak_live_…`.
+      responses:
+        '200':
+          description: New signing secret (shown once).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [object, api_key_id, signing_secret, message]
+                properties:
+                  object:
+                    type: string
+                    example: signing_secret
+                  api_key_id:
+                    type: string
+                    description: The API key's public identifier (`ak_live_…` / `ak_test_…`), not the bearer secret.
+                    example: ak_live_9f3c8a2b1d4e5f6a7b8c9d0e
+                  signing_secret:
+                    type: string
+                    description: Store securely; not shown again.
+                    example: whsig_01JRXYZabcdefghijklmnopqrstuvwxyz0123456789abcdef
+                  message:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+# ────────────────────────────────────────────────────────────────
+# COMPONENTS
+# ────────────────────────────────────────────────────────────────
+
+components:
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Authenticate with your PearlPay secret API key.
+
+        ```
+        Authorization: Bearer sk_live_<your_key>
+        ```
+
+        Use `sk_test_<key>` for sandbox. Keys are provisioned in the PearlPay Dashboard
+        under **Settings → API Keys**. Available key scopes:
+        - `payments:read` / `payments:write`
+        - `disbursements:read` / `disbursements:write`
+        - `payment_links:read` / `payment_links:write`
+        - `webhooks:manage` (activate webhook endpoints and rotate their signing secrets)
+
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        maxLength: 255
+      description: |
+        **Required on `POST /payments`, `POST /disbursements`, `POST /payment_links`, and
+        `POST /payment_links/{id}/checkout_url`** — omitting it returns
+        `400` (`idempotency_required`). A unique string (UUID v4 recommended) that ensures
+        this request is processed at most once. If a request with the same key has already
+        succeeded, the original response is returned without re-processing (with the
+        `Idempotent-Replayed: true` header). Keys expire after 24 hours.
+
+        If the same key is sent with **different parameters**, `409` (`idempotency_conflict`)
+        is returned. If the original request is still in flight, `409`
+        (`idempotency_in_progress`) is returned — retry after a short delay.
+
+    ApiVersion:
+      name: X-Api-Version
+      in: header
+      required: false
+      schema:
+        type: string
+        example: "2026-04-14"
+      description: |
+        Pins this request to a specific API version (`YYYY-MM-DD`). Omit to use the
+        server default (**`2026-04-14`**). Pinning protects your integration from
+        future backwards-incompatible serializer changes; the current version has a
+        single resource shape, so all dates presently behave the same.
+
+    PageParam:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+      description: Page number (1-based).
+
+    PerPageParam:
+      name: per_page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+      description: |
+        Results per page (1–100). Defaults to 20. Values above 100 are clamped to 100;
+        zero, negative, or non-numeric values fall back to the default.
+
+    # Optional HMAC request signing — see /api-docs/guides/request-signing
+    RequestTimestamp:
+      name: X-Request-Timestamp
+      in: header
+      required: false
+      schema:
+        type: string
+        example: "1713086400"
+      description: |
+        Unix timestamp (seconds). Message signed is `timestamp.nonce.SHA256hex(raw_body)`.
+        Required with `X-Request-Nonce` and `X-Signature` for `POST /disbursements`, or when
+        optional signing is used on `POST /payments`.
+
+    RequestNonce:
+      name: X-Request-Nonce
+      in: header
+      required: false
+      schema:
+        type: string
+        example: nce_01JRXYZ1234ABCDEF
+      description: |
+        Unique nonce per request (max 64 characters). Prevents replay when combined with
+        timestamp and HMAC verification.
+
+    RequestSignature:
+      name: X-Signature
+      in: header
+      required: false
+      schema:
+        type: string
+        example: "v1=a1b2c3d4e5f6..."
+      description: |
+        `v1=` + hex HMAC-SHA256(`timestamp.nonce.SHA256hex(body)`, signing_secret). See [Request signing guide](/api-docs/guides/request-signing).
+
+    DisbursementRequestTimestamp:
+      name: X-Request-Timestamp
+      in: header
+      required: true
+      schema:
+        type: string
+        example: "1713086400"
+      description: |
+        **Required for disbursement create.** Unix timestamp (seconds); must be within ±5 minutes of server time.
+
+    DisbursementRequestNonce:
+      name: X-Request-Nonce
+      in: header
+      required: true
+      schema:
+        type: string
+      description: |
+        **Required for disbursement create.** Unique per request (max 64 characters).
+
+    DisbursementRequestSignature:
+      name: X-Signature
+      in: header
+      required: true
+      schema:
+        type: string
+        example: "v1=a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef12"
+      description: |
+        **Required for disbursement create.** HMAC-SHA256 over `timestamp.nonce.SHA256hex(body)` using the key's `whsig_` signing secret; prefix with `v1=`.
+
+  headers:
+    XRequestId:
+      description: |
+        Unique request identifier (UUID), returned on **every** `/v1` response and echoed
+        in the error envelope's `request_id`. Pass your own `X-Request-Id` request header
+        to propagate an existing trace ID. Include it in all support communications.
+      schema:
+        type: string
+        example: 9f6f63ce-7a45-4f9b-9c1d-2a52a113b8d0
+
+    Deprecation:
+      description: |
+        Present when the request used a deprecated field (e.g. `bank_code` instead of
+        `partner_code` on `POST /disbursements`). The value describes the replacement
+        and the sunset date.
+      schema:
+        type: string
+        example: "bank_code is deprecated; use partner_code (canonical). Sunset: 2026-12-01"
+
+    IdempotentReplayed:
+      description: |
+        Present when the outcome was replayed from a previous request using the same
+        `Idempotency-Key` — successful outcomes and cached error outcomes alike (same
+        semantics as Stripe). The status code matches the original response (usually
+        `201` for successes; the original error status for replayed errors). Use it to
+        distinguish a fresh failure from the cached outcome of an earlier attempt.
+
+        Declared explicitly only on the responses that reference this header directly.
+        The shared 4xx/5xx response components (`Conflict`, `UnprocessableEntity`,
+        `InternalServerError`, `BadGateway`) are reused by non-keyed endpoints too, so
+        this header is omitted from their schema even though the four keyed create
+        operations (`createPayment`, `createDisbursement`, `createPaymentLink`,
+        `createPaymentLinkCheckoutUrl`) do send it when replaying a cached error.
+      schema:
+        type: string
+        enum: ["true"]
+
+    # Delivered on POST requests to your webhook URL (see Webhooks guide)
+    XWebhookId:
+      description: "Unique delivery identifier for this webhook attempt."
+      schema:
+        type: string
+        example: wh_01JRXYZ1234ABCDEF
+
+    XWebhookTimestamp:
+      description: "Unix timestamp (seconds) when PearlPay signed this payload."
+      schema:
+        type: string
+        example: "1713086400"
+
+    XWebhookSignature:
+      description: |
+        HMAC-SHA256 signature of `timestamp + '.' + raw_body` using your endpoint's
+        `whsec_` signing secret. Format `v1=<hex>`.
+      schema:
+        type: string
+        example: "v1=a1b2c3d4e5f6789..."
+
+  schemas:
+
+    AmountInput:
+      description: |
+        Monetary amount in centavos (minor units) — Stripe-compatible. `150000` = PHP 1,500.00.
+
+        Decimal values are **rejected** with `422 invalid_parameter`: both JSON floats
+        (`1500.00`) and decimal strings (`"1500.00"`). The error hints the integer to send
+        (e.g. `Send 150050 for 1,500.50 PHP`). A digit-only string (`"150000"`) is accepted
+        as minor units.
+
+        Used by `POST /v1/payments` and `POST /v1/disbursements`. **Payment Links use a
+        different, more permissive input** — see `PaymentLinkAmountInput`.
+      oneOf:
+        - type: integer
+          minimum: 1
+          description: Integer amount in centavos (minor units).
+          example: 150000
+        - type: string
+          pattern: '^\d+$'
+          description: Digit-only string in centavos (minor units).
+          example: "150000"
+
+    PaymentLinkAmountInput:
+      description: |
+        Monetary amount for Payment Link `amount` / `minimum_amount` / `maximum_amount` /
+        `suggested_amount` on **create, update, and clone only**.
+
+        Unlike `AmountInput`, this field is **not** limited to minor units: the same parser
+        backs both this JSON API and an HTML checkout-builder form, so it additionally
+        accepts a decimal string in major units. **Do not assume `POST /v1/payments` /
+        `POST /v1/disbursements` decimal-rejection rules apply here.** Note that the
+        `checkout_url` sub-resource's `amount` field is a separate case — see
+        `PaymentLinkCheckoutUrlRequest`, which uses the strict `AmountInput`.
+      oneOf:
+        - type: integer
+          minimum: 1
+          description: Integer amount in centavos (minor units).
+          example: 150000
+        - type: string
+          pattern: '^\d+$'
+          description: Digit-only string in centavos (minor units).
+          example: "150000"
+        - type: string
+          pattern: '^\d+\.\d+$'
+          description: Decimal string in major units (PHP pesos).
+          example: "1500.00"
+
+    # ── Payment ─────────────────────────────────────────────────────
+
+    Payment:
+      type: object
+      description: |
+        An incoming payment from a customer. The shape is stable — every key is always
+        present and unset values are `null`.
+
+        `metadata` sent at creation is stored and shown in the Dashboard but is **not**
+        returned on API payment resources.
+      properties:
+        id:
+          type: string
+          example: pay_01JRXYZ1234ABCDEF
+          description: "Unique PearlPay identifier. Always prefixed `pay_`."
+        object:
+          type: string
+          enum: [payment]
+          description: "Always `\"payment\"`."
+        merchant_reference_id:
+          type: string
+          example: ORDER-2026-00123
+          description: "Your unique reference ID for this payment."
+        status:
+          $ref: '#/components/schemas/PaymentStatus'
+        amount:
+          type: integer
+          example: 150000
+          description: |
+            Total amount in centavos (smallest currency unit) — the gross the customer pays.
+            PHP 1,500.00 = `150000`. Divide by 100 for the decimal value.
+        amount_decimal:
+          type: string
+          example: "1500.00"
+          description: "Amount as a formatted decimal string. For display only — use `amount` for arithmetic."
+        currency:
+          type: string
+          enum: [PHP]
+          description: "ISO 4217 currency code. Currently `PHP` only."
+        payment_channel:
+          type: [string, "null"]
+          example: gcash
+          description: |
+            The channel this payment was created for — the same stable identifier you sent as
+            `payment_channel`. Which provider account ultimately served it is deliberately not
+            exposed, so routing can change without a contract change.
+        checkout_url:
+          type: [string, "null"]
+          description: |
+            Redirect the customer to this URL to complete payment. For QRPH, this is the
+            PearlPay-hosted page that displays the QR code.
+        expires_at:
+          type: [string, "null"]
+          format: date-time
+          example: "2026-04-14T09:00:00Z"
+          description: |
+            When the checkout window closes. After this the payment is reaped `failed` with
+            `message: "Payment expired"`. Null when the payment has no expiry.
+        paid_at:
+          type: [string, "null"]
+          format: date-time
+          example: "2026-04-14T08:35:00Z"
+          description: "When the payment was confirmed. Null until `status` is `succeeded`."
+        message:
+          type: [string, "null"]
+          example: Payment expired
+          description: |
+            Human-readable detail about the current status. This is the only field that
+            distinguishes a lapsed checkout (`"Payment expired"`) from a provider rejection —
+            both are `status: "failed"` — so check it before deciding whether to offer a retry
+            or release held inventory.
+        created_at:
+          type: string
+          format: date-time
+          example: "2026-04-14T08:30:00Z"
+
+    PaymentList:
+      type: object
+      properties:
+        object:
+          type: string
+          enum: [list]
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Payment'
+        meta:
+          $ref: '#/components/schemas/PaginationMeta'
+
+    PaymentStatus:
+      type: string
+      enum:
+        - pending
+        - processing
+        - succeeded
+        - failed
+        - voided
+      description: |
+        | Status | Description | Terminal? |
+        |--------|-------------|-----------|
+        | `pending` | Created; awaiting customer action or provider initiation. | No |
+        | `processing` | Submitted to provider; awaiting confirmation. | No |
+        | `succeeded` | Confirmed. Funds received. | Yes |
+        | `failed` | Payment failed (includes checkout expiration — see `message`). | Yes |
+        | `voided` | Voided before completion. | Yes |
+
+    CreatePaymentRequest:
+      type: object
+      required: [merchant_reference_id, amount, payment_channel]
+      properties:
+        merchant_reference_id:
+          type: string
+          maxLength: 100
+          description: |
+            Your unique reference ID. Must be unique per merchant. Alphanumeric,
+            dashes, and underscores allowed. Maps to legacy `txnid`.
+          example: ORDER-2026-00123
+        amount:
+          $ref: '#/components/schemas/AmountInput'
+        currency:
+          type: string
+          enum: [PHP]
+          default: PHP
+          description: "ISO 4217 currency code. Optional — defaults to `PHP`."
+        payment_channel:
+          type: string
+          enum:
+            - qrph
+            - gcash
+            - maya
+            - card
+            - bpi
+            - ub online
+            - instapay
+            - cebl
+            - plwn
+            - grabpay
+            - shopeepay
+          description: |
+            The payment channel to route the customer through. Availability depends on your
+            provider configuration; the response includes `checkout_url` (a PearlPay-hosted
+            page or a redirect to the provider's checkout). Amount limits are per-channel —
+            see the table below.
+
+            | Channel | Customer experience | Typical amount range (PHP) |
+            |---------|---------------------|----------------------------|
+            | `qrph` | BSP-standard QR code scanned with any QRPH-enabled banking app. | 100 – 50,000 |
+            | `gcash` | Redirect to the GCash e-wallet checkout. | 100 – 80,000 |
+            | `maya` | Redirect to the Maya e-wallet checkout. | 110 – 50,000 |
+            | `card` | PearlPay-hosted card page; the customer enters their card on the provider's secure page (no card data touches your servers or PearlPay). | 110 – 50,000 |
+            | `bpi` | Redirect to BPI Online banking; the customer approves the payment in their own bank session. | 110 – 150,000 |
+            | `grabpay` | Redirect to the GrabPay e-wallet checkout. | 100 – 80,000 |
+            | `shopeepay` | Redirect to the ShopeePay e-wallet checkout. | 1 – 100,000 |
+            | `ub online` | UnionBank online banking. | 100 and up |
+            | `instapay` | InstaPay bank transfer. | 100 – 50,000 |
+            | `cebl` | Cebuana Lhuillier over-the-counter. | 100 – 79,980 |
+            | `plwn` | Palawan Pawnshop over-the-counter. | 100 – 19,980 |
+
+            Exact limits and channel availability follow your provider configuration; amounts
+            outside a channel's configured range return `no_available_provider`.
+          example: qrph
+        payment_method_type:
+          type: [string, "null"]
+          description: "Optional override for payment method type category."
+        customer:
+          $ref: '#/components/schemas/Customer'
+        merchant_terminal_id:
+          type: [string, "null"]
+          description: "Optional terminal or branch identifier."
+        callback_url:
+          type: string
+          format: uri
+          description: >-
+            HTTPS URL to receive callback notifications for this payment. Distinct from
+            `redirect_url`, which is where the customer's browser is sent — this is a
+            server-to-server notification target. If omitted, defaults to PearlPay's own
+            inbound provider-callback endpoint for the routed provider.
+          example: "https://merchant.ph/webhooks/pearlpay"
+        redirect_url:
+          type: string
+          format: uri
+          description: "URL to redirect the customer after completing (or canceling) payment."
+          example: "https://merchant.ph/checkout/return"
+        requesting_url:
+          type: string
+          format: uri
+          description: "URL of the page that initiated the payment. Used for fraud signals."
+        metadata:
+          type: object
+          additionalProperties: true
+          description: |
+            Arbitrary key-value pairs for your reference. Stored and shown in the Dashboard,
+            but **not returned** on API payment resources.
+          example:
+            order_id: ORDER-2026-00123
+        facilitation_fee:
+          description: |
+            Optional facilitation fee (decimal string or integer centavos — same formats as
+            `amount`) used when no routed provider capability supplies the fee. Ignored when
+            a capability is selected at creation (fee comes from configuration).
+          oneOf:
+            - type: string
+              pattern: '^\d+(\.\d{1,2})?$'
+              example: "45.00"
+            - type: integer
+              minimum: 0
+              example: 4500
+
+    Customer:
+      type: object
+      description: "Customer details associated with a payment."
+      properties:
+        first_name:
+          type: string
+          example: Maria
+        last_name:
+          type: string
+          example: Santos
+        email:
+          type: string
+          format: email
+          example: maria.santos@email.com
+        mobile:
+          type: string
+          description: |
+            Philippine mobile number. Both formats accepted:
+            - E.164: `+639171234567`
+            - Local: `09171234567`
+          example: "+639171234567"
+
+    # ── Disbursement ─────────────────────────────────────────────────
+
+    Disbursement:
+      type: object
+      description: |
+        An outgoing fund transfer to a recipient. The shape is stable — every key is always
+        present and unset values are `null`.
+      properties:
+        id:
+          type: string
+          example: dis_01JRXYZ5678GHIJKL
+          description: "Unique PearlPay identifier. Always prefixed `dis_`."
+        object:
+          type: string
+          enum: [disbursement]
+          description: "Always `\"disbursement\"`."
+        merchant_reference_id:
+          type: string
+          example: PAYOUT-2026-00456
+          description: "Your unique reference ID for this disbursement."
+        status:
+          $ref: '#/components/schemas/DisbursementStatus'
+        amount:
+          type: integer
+          example: 500000
+          description: "Total amount in centavos. PHP 5,000.00 = `500000`."
+        amount_decimal:
+          type: string
+          example: "5000.00"
+          description: "Amount as a formatted decimal string. For display only — use `amount` for arithmetic."
+        currency:
+          type: string
+          enum: [PHP]
+          description: "ISO 4217 currency code. Currently `PHP` only."
+        created_at:
+          type: string
+          format: date-time
+          example: "2026-04-14T08:30:00Z"
+
+    DisbursementList:
+      type: object
+      properties:
+        object:
+          type: string
+          enum: [list]
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Disbursement'
+        meta:
+          $ref: '#/components/schemas/PaginationMeta'
+
+    DisbursementStatus:
+      type: string
+      enum:
+        - queued
+        - processing
+        - submitted
+        - pending_confirmation
+        - paid
+        - failed
+        - returned
+        - canceled
+      description: |
+        | Status | Description | Terminal? |
+        |--------|-------------|-----------|
+        | `queued` | Accepted; awaiting processing. | No |
+        | `processing` | Being processed by the payment network. | No |
+        | `submitted` | Submitted to destination bank/e-wallet. | No |
+        | `pending_confirmation` | Awaiting final settlement confirmation. | No |
+        | `paid` | Delivered to recipient. | Yes |
+        | `failed` | Processing failed. | Yes |
+        | `returned` | Funds returned by destination bank. | Yes |
+        | `canceled` | Canceled before processing. Funds returned to wallet. | Yes |
+
+    CreateDisbursementRequest:
+      type: object
+      required: [merchant_reference_id, amount, rail, account_number, account_name]
+      description: |
+        One of `partner_code` (canonical) or `bank_code` (deprecated) is also required —
+        omitting both returns `422 missing_parameter`.
+      properties:
+        merchant_reference_id:
+          type: string
+          maxLength: 100
+          description: |
+            Your unique reference ID. Must be unique per merchant. Acts as permanent
+            deduplication key — sending the same value again returns `200 OK` with the
+            original disbursement instead of creating a duplicate payout.
+            Maps to legacy `sender_ref_id`.
+          example: PAYOUT-2026-00456
+        amount:
+          $ref: '#/components/schemas/AmountInput'
+        currency:
+          type: string
+          enum: [PHP]
+          default: PHP
+          description: "ISO 4217 currency code. Optional — defaults to `PHP`."
+        rail:
+          type: string
+          enum: [instapay, pesonet, rtgs]
+          description: |
+            Disbursement rail:
+            - `instapay` — Near-real-time (seconds to minutes). BSP per-transaction and daily limits apply.
+            - `rtgs` — Real-time gross settlement (banking hours; same-day status checks as InstaPay).
+            - `pesonet` — Batch clearing. Same-day if submitted before 3:00 PM PHT on a banking day; next banking day otherwise.
+          example: instapay
+        partner_code:
+          type: string
+          description: >
+            Destination institution code from
+            `GET /disbursements/rails/{code}/partners`. Accepts the canonical
+            `code` or the per-rail `alias_code` (3–6 alphanumeric). Preferred over `bank_code`.
+        bank_code:
+          type: string
+          deprecated: true
+          description: |
+            **Deprecated — use `partner_code`.** Legacy bank/e-wallet code (values from
+            `GET /v1/partners`). Requests using `bank_code` without `partner_code` receive
+            a `Deprecation` response header. Sunset: 2026-12-01.
+          example: BDO
+        account_number:
+          type: string
+          description: "Recipient account number. Only the last 4 digits are stored."
+          example: "1234567890"
+        account_name:
+          type: string
+          description: |
+            Registered account name. Should match the name on the destination account exactly.
+            Name mismatches may cause returns, particularly on PESONet.
+          example: Jose Reyes
+        sender:
+          type: object
+          description: "Sender details as they appear on the recipient's transaction record."
+          properties:
+            name:
+              type: string
+              example: Acme Corp
+            account_number:
+              type: string
+            bank_code:
+              type: string
+            address:
+              type: string
+            email:
+              type: string
+              format: email
+            mobile:
+              type: string
+        recipient:
+          type: object
+          description: "Extended recipient details for your records."
+          properties:
+            name:
+              type: string
+            account_number:
+              type: string
+            bank_code:
+              type: string
+            address:
+              type: string
+            email:
+              type: string
+              format: email
+            mobile:
+              type: string
+        callback_url:
+          type: string
+          format: uri
+          description: "HTTPS URL to receive callback notifications for this disbursement."
+        metadata:
+          type: object
+          additionalProperties: true
+
+    # ── Partner ──────────────────────────────────────────────────────
+
+    Partner:
+      type: object
+      description: "Legacy partner entry returned by `GET /partners`."
+      properties:
+        bank_code:
+          type: string
+          example: BDO
+          description: "Use as the (deprecated) `bank_code` field when creating disbursements."
+        bank_name:
+          type: string
+          example: BDO Unibank
+        active:
+          type: boolean
+          description: "`true` if currently accepting disbursements."
+
+    PartnerList:
+      type: object
+      properties:
+        object:
+          type: string
+          enum: [list]
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Partner'
+
+    # ── Disbursement Rails ───────────────────────────────────────────
+
+    TransferRail:
+      type: object
+      properties:
+        code:
+          type: string
+          example: instapay
+          description: "Use as the `rail` value when creating disbursements."
+        name:
+          type: string
+          example: InstaPay
+        settlement_behavior:
+          type: string
+          enum: [real_time, batch, rtgs]
+        max_amount:
+          type: string
+          example: "50000.00"
+          description: |
+            Maximum amount per transaction as a decimal string. Omitted when the rail
+            has no configured limit.
+
+    TransferRailList:
+      type: object
+      properties:
+        object:
+          type: string
+          enum: [list]
+        rails:
+          type: array
+          items:
+            $ref: '#/components/schemas/TransferRail'
+
+    RailPartner:
+      type: object
+      properties:
+        code:
+          type: string
+          example: "161312"
+          description: "Canonical partner code (BSP numeric on InstaPay/PesoNet; legacy short code on RTGS). Always accepted as `partner_code`."
+        alias_code:
+          type: [string, "null"]
+          example: BDO
+          description: "Optional 3–6 alphanumeric per-rail alias. Also accepted as `partner_code` on create/bulk; omitted when unset."
+        name:
+          type: string
+          example: Banco De Oro Unibank, Inc.
+        partner_type:
+          type: string
+          example: bank
+          description: "Partner category (e.g. `bank`, `ewallet`)."
+
+    RailPartnerList:
+      type: object
+      properties:
+        object:
+          type: string
+          enum: [list]
+        rail:
+          type: string
+          example: instapay
+        rail_name:
+          type: string
+          example: InstaPay
+        settlement_behavior:
+          type: string
+          enum: [real_time, batch, rtgs]
+        partners:
+          type: array
+          items:
+            $ref: '#/components/schemas/RailPartner'
+
+    # ── Wallet ───────────────────────────────────────────────────────
+
+    WalletLedgerBalance:
+      type: object
+      properties:
+        currency:
+          type: string
+          enum: [PHP]
+        available:
+          type: string
+          example: "50000.00"
+          description: "Spendable balance as a decimal string."
+        pending:
+          type: string
+          example: "1500.00"
+          description: "In-flight exposure as a decimal string (unsettled payments or disbursements)."
+        reserved:
+          type: string
+          example: "2000.00"
+          description: "Held reserves as a decimal string (e.g. queued disbursement principal + fees)."
+
+    WalletBalance:
+      type: object
+      properties:
+        payments:
+          $ref: '#/components/schemas/WalletLedgerBalance'
+        disbursements:
+          $ref: '#/components/schemas/WalletLedgerBalance'
+        updated_at:
+          type: string
+          format: date-time
+
+    # ── Payment Links ────────────────────────────────────────────────
+
+    PaymentLink:
+      type: object
+      required: [id, object, status, environment, currency, amount_type, channel_mode, url, reusable, use_count, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          example: plink_01JRXYZ1234ABCDEF
+        object:
+          type: string
+          enum: [payment_link]
+        status:
+          type: string
+          enum: [active, disabled, expired, exhausted]
+        environment:
+          type: string
+          enum: [live, test]
+        title:
+          type: [string, "null"]
+        description:
+          type: [string, "null"]
+        reference:
+          type: [string, "null"]
+        currency:
+          type: string
+          example: PHP
+        amount_type:
+          type: string
+          enum: [fixed, variable]
+        amount:
+          type: [integer, "null"]
+          description: Fixed amount in minor units.
+        minimum_amount:
+          type: [integer, "null"]
+        maximum_amount:
+          type: [integer, "null"]
+        suggested_amount:
+          type: [integer, "null"]
+        channel_mode:
+          type: string
+          enum: [any, fixed]
+        channel:
+          type: [string, "null"]
+          description: Channel slug when channel_mode is fixed.
+        url:
+          type: string
+          format: uri
+          description: Durable link URL with pl_ token.
+        redirect_url:
+          type: [string, "null"]
+          format: uri
+        cancel_url:
+          type: [string, "null"]
+          format: uri
+        expires_at:
+          type: [string, "null"]
+          format: date-time
+        reusable:
+          type: boolean
+        max_uses:
+          type: [integer, "null"]
+        use_count:
+          type: integer
+        collect_customer_details:
+          type: object
+        branding:
+          type: object
+        metadata:
+          type: object
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    PaymentLinkList:
+      type: object
+      required: [object, data, meta]
+      properties:
+        object:
+          type: string
+          enum: [list]
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/PaymentLink'
+        meta:
+          type: object
+          properties:
+            limit:
+              type: integer
+            has_more:
+              type: boolean
+            next_starting_after:
+              type: string
+
+    CreatePaymentLinkRequest:
+      type: object
+      description: |
+        All fields are optional. Defaults: `amount_type: fixed`, `channel_mode: any`,
+        `currency: PHP`, `reusable: true`.
+      properties:
+        title:
+          type: string
+          description: Heading shown on the hosted checkout page.
+        description:
+          type: string
+          description: Supporting text shown under the title on hosted checkout.
+        reference:
+          type: string
+          description: Your internal reference for this link.
+        currency:
+          type: string
+          default: PHP
+        amount_type:
+          type: string
+          enum: [fixed, variable]
+          default: fixed
+          description: |
+            `fixed` — every payment charges `amount`. `variable` — the customer chooses an
+            amount between `minimum_amount` and `maximum_amount`. Immutable after creation.
+        amount:
+          $ref: '#/components/schemas/PaymentLinkAmountInput'
+          description: The charge amount. Used (and required) when `amount_type` is `fixed`.
+        minimum_amount:
+          $ref: '#/components/schemas/PaymentLinkAmountInput'
+          description: Lower bound for `variable`-amount links.
+        maximum_amount:
+          $ref: '#/components/schemas/PaymentLinkAmountInput'
+          description: Upper bound for `variable`-amount links.
+        suggested_amount:
+          $ref: '#/components/schemas/PaymentLinkAmountInput'
+          description: Pre-filled amount shown to the customer on `variable`-amount links.
+        channel_mode:
+          type: string
+          enum: [any, fixed]
+          default: any
+          description: |
+            `any` — the customer picks a channel on hosted checkout. `fixed` — every payment
+            uses `channel`. Immutable after creation.
+        channel:
+          type: string
+          description: "Payment channel slug (e.g. `gcash`, `qrph`). Required when `channel_mode` is `fixed`."
+        redirect_url:
+          type: string
+          format: uri
+          description: Where the customer is sent after a successful payment.
+        cancel_url:
+          type: string
+          format: uri
+          description: Where the customer is sent if they cancel out of checkout.
+        expires_at:
+          type: string
+          format: date-time
+          description: When the link stops accepting payments (status becomes `expired`).
+        reusable:
+          type: boolean
+          default: true
+          description: |
+            `false` makes a single-use link — the first **succeeded** payment consumes it;
+            pending sessions resume, and failed/expired attempts do not consume the link.
+        max_uses:
+          type: integer
+          description: Maximum number of successful payments before the link is `exhausted`.
+        collect_customer_details:
+          type: object
+          description: Which customer fields hosted checkout collects.
+        branding:
+          type: object
+          description: Hosted checkout branding overrides (colors, logo).
+        metadata:
+          type: object
+          description: Arbitrary key-value pairs for your reference.
+
+    UpdatePaymentLinkRequest:
+      type: object
+      description: |
+        Partial update — only the keys you send are changed. `amount_type`, `environment`,
+        and `channel_mode` are immutable after creation (clone the link to change them).
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        reference:
+          type: string
+          description: Your internal reference for this link.
+        status:
+          type: string
+          enum: [active, disabled]
+        amount:
+          $ref: '#/components/schemas/PaymentLinkAmountInput'
+        minimum_amount:
+          $ref: '#/components/schemas/PaymentLinkAmountInput'
+        maximum_amount:
+          $ref: '#/components/schemas/PaymentLinkAmountInput'
+        suggested_amount:
+          $ref: '#/components/schemas/PaymentLinkAmountInput'
+        channel:
+          type: string
+          description: |
+            New payment channel slug. Only honored when the link's `channel_mode` is
+            `fixed`; an unknown slug returns `422 invalid_parameter`.
+        redirect_url:
+          type: string
+        cancel_url:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+          description: When the link stops accepting payments. Send `null` to clear.
+        reusable:
+          type: boolean
+          description: Whether the link may be paid more than once.
+        max_uses:
+          type: integer
+          description: Maximum number of successful payments before the link is `exhausted`.
+        collect_customer_details:
+          type: object
+          description: Which customer fields hosted checkout collects (replaces the stored object).
+        branding:
+          type: object
+          description: Hosted checkout branding overrides (replaces the stored object).
+        metadata:
+          type: object
+
+    ClonePaymentLinkRequest:
+      type: object
+      description: |
+        All fields optional. Omitted fields copy the source link unchanged. Only `title`,
+        `description`, `metadata`, and (for `fixed`-amount links) `amount` may be overridden —
+        `amount_type`, `minimum_amount`, `maximum_amount`, `suggested_amount`, `channel_mode`,
+        and `channel` are always copied from the source and cannot be overridden on clone.
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        amount:
+          $ref: '#/components/schemas/PaymentLinkAmountInput'
+          description: Override the fixed amount. Ignored unless the source link's `amount_type` is `fixed`.
+        metadata:
+          type: object
+
+    PaymentLinkCheckoutUrlRequest:
+      type: object
+      required: [merchant_reference_id]
+      properties:
+        merchant_reference_id:
+          type: string
+          description: Your unique reference ID for the payment this session creates.
+        amount:
+          $ref: '#/components/schemas/AmountInput'
+          description: |
+            **Required when the link's `amount_type` is `variable`** (must fall inside the
+            link's `minimum_amount`/`maximum_amount`, else `422 invalid_amount`). Ignored
+            for `fixed`-amount links — the link's configured amount is always used.
+        channel:
+          type: string
+          description: |
+            Payment channel slug (e.g. `gcash`, `qrph`). **Required when the link's
+            `channel_mode` is `any`** (`422 invalid_channel_mode` if omitted). Ignored for
+            `fixed`-channel links — the link's configured channel is always used.
+        customer:
+          type: object
+          properties:
+            first_name:
+              type: string
+            last_name:
+              type: string
+            email:
+              type: string
+            mobile:
+              type: string
+            description:
+              type: string
+              description: Free-text note about the customer; stored in the payment's metadata.
+            address:
+              type: string
+              description: Customer address; stored in the payment's metadata.
+        metadata:
+          type: object
+          additionalProperties: true
+          description: |
+            Arbitrary key-value pairs stored on the created payment (merged with the
+            link attribution keys). Shown in the Dashboard; not returned on API
+            payment resources.
+
+    PaymentLinkCheckoutUrlResponse:
+      type: object
+      required: [object, checkout_url, payment_id]
+      properties:
+        object:
+          type: string
+          enum: [checkout_session]
+        checkout_url:
+          type: string
+          format: uri
+        payment_id:
+          type: string
+        expires_at:
+          type: [string, "null"]
+          format: date-time
+
+    # ── Webhook Endpoint ─────────────────────────────────────────────
+
+    WebhookEndpoint:
+      type: object
+      properties:
+        id:
+          type: string
+          example: we_9f3c8a2b1d4e5f6a7b8c9d0e
+          description: "Webhook endpoint ID (`we_…`). Use it for `POST /webhook_endpoints/{id}/rotate_signing_secret`. Shown in the Dashboard **Webhook endpoints** table."
+        object:
+          type: string
+          enum: [webhook_endpoint]
+        url:
+          type: string
+          format: uri
+          example: "https://merchant.ph/webhooks/pearlpay"
+        status:
+          type: string
+          enum: [enabled, suspended, disabled]
+          description: |
+            * `enabled` — receiving events.
+            * `suspended` — deliveries are temporarily paused because three consecutive
+              deliveries exhausted every retry. They resume automatically at
+              `deliveries_resume_at`, or immediately via
+              `POST /webhook_endpoints/{id}/activate`.
+            * `disabled` — switched off by you or by PearlPay operations.
+        deliveries_resume_at:
+          type: [string, "null"]
+          format: date-time
+          description: |
+            When a `suspended` endpoint resumes delivery automatically. `null` unless
+            `status` is `suspended`.
+          example: "2026-04-14T14:00:00Z"
+        enabled_events:
+          type: array
+          items:
+            type: string
+          example: [payment.succeeded, payment.failed, disbursement.paid]
+        description:
+          type: [string, "null"]
+        signing_secret:
+          type: [string, "null"]
+          description: |
+            HMAC-SHA256 signing secret (`whsec_` prefix). **Shown only on creation.**
+            Store it securely — it cannot be retrieved again. Rotate via the Dashboard.
+          example: "whsec_test_fixture_not_a_real_secret..."
+        created_at:
+          type: string
+          format: date-time
+
+    WebhookEndpointList:
+      type: object
+      properties:
+        object:
+          type: string
+          enum: [list]
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/WebhookEndpoint'
+
+    CreateWebhookEndpointRequest:
+      type: object
+      required: [url, enabled_events]
+      properties:
+        url:
+          type: string
+          format: uri
+          description: "HTTPS endpoint URL. Must return a `2xx` status within 30 seconds."
+          example: "https://merchant.ph/webhooks/pearlpay"
+        enabled_events:
+          type: array
+          description: |
+            Event types to subscribe to. Use `["*"]` to subscribe to all event types
+            (expanded to the full list at creation time). Unknown event types return
+            `400 invalid_parameter`.
+
+            `["*"]` is stored as a wildcard rather than a copy of the current list, so event
+            types added to the platform later are delivered to that endpoint automatically.
+            An endpoint that selected a specific subset only receives what it listed — add a new
+            type to it explicitly to start receiving it. Either way `enabled_events` reads back
+            as the full resolved list of types the endpoint receives.
+
+            Expired payments surface as `payment.failed` (not a separate event type).
+
+            `payment.checkout_ready` is delivered when a payment created without a
+            `checkout_url` (transient provider failure, retried in the background) obtains one.
+            It is not sent when checkout succeeds on the first attempt, where `payment.created`
+            already carries the URL.
+
+            `payment.abandoned` is delivered when a customer cancels out of a hosted payment
+            link before completing it. The underlying payment status is still `failed` (there is
+            no separate `abandoned` status), but the event type lets you distinguish voluntary
+            cancellation from a genuine provider failure.
+
+            `payment.reversed` is delivered when a payment that had already succeeded is clawed
+            back. `data.object.status` is `voided`, the same status a payment voided before
+            completion carries, so use the event `type` to tell a reversal of confirmed funds
+            apart from a payment that was never collected.
+          items:
+            type: string
+            enum:
+              - "*"
+              - payment.created
+              - payment.pending
+              - payment.processing
+              - payment.succeeded
+              - payment.failed
+              - payment.voided
+              - payment.reversed
+              - payment.checkout_ready
+              - payment.abandoned
+              - disbursement.created
+              - disbursement.processing
+              - disbursement.submitted
+              - disbursement.pending_confirmation
+              - disbursement.paid
+              - disbursement.failed
+              - disbursement.returned
+              - disbursement.canceled
+          example: [payment.succeeded, payment.failed, disbursement.paid]
+        description:
+          type: [string, "null"]
+          example: "Production webhook"
+
+    # ── Webhook Event ────────────────────────────────────────────────
+
+    WebhookEvent:
+      type: object
+      description: "The payload delivered to your webhook endpoint via HTTP POST."
+      properties:
+        id:
+          type: string
+          example: evt_4f9b9c1d2a52a113b8d0aa01
+          description: "Unique event identifier (`evt_` + 24 hex chars). Use for idempotent processing."
+        object:
+          type: string
+          enum: [event]
+        type:
+          type: string
+          example: payment.succeeded
+          description: "Event type string (e.g., `payment.succeeded`, `disbursement.paid`)."
+        api_version:
+          type: string
+          example: "2026-04-14"
+          description: "API version used to serialize `data.object`."
+        created:
+          type: integer
+          example: 1713083700
+          description: "Unix timestamp (seconds) when the event was generated. Legacy alias of `created_at`."
+        created_at:
+          type: string
+          format: date-time
+          example: "2026-04-14T08:35:00Z"
+          description: "When the event was generated (ISO 8601)."
+        data:
+          type: object
+          description: "Contains the affected resource under `data.object`."
+          properties:
+            object:
+              description: "The full resource object at the time of the event."
+              oneOf:
+                - $ref: '#/components/schemas/Payment'
+                - $ref: '#/components/schemas/Disbursement'
+
+    # ── Pagination ───────────────────────────────────────────────────
+
+    PaginationMeta:
+      type: object
+      description: "Pagination metadata returned with list responses."
+      properties:
+        page:
+          type: integer
+          example: 1
+        per_page:
+          type: integer
+          example: 20
+        total:
+          type: integer
+          example: 143
+          description: "Total number of records matching the query."
+        total_pages:
+          type: integer
+          example: 8
+        from:
+          type: string
+          format: date
+          example: "2026-01-14"
+          description: "Start of the queried date range."
+        to:
+          type: string
+          format: date
+          example: "2026-04-14"
+          description: "End of the queried date range."
+
+    # ── Error ────────────────────────────────────────────────────────
+
+    Error:
+      type: object
+      description: |
+        Standard error envelope returned on all 4xx and 5xx responses.
+        See the [error code reference](/api-docs/guides/errors) for the full list of codes.
+      properties:
+        error:
+          type: object
+          required: [code, message, request_id]
+          properties:
+            code:
+              type: string
+              example: invalid_parameter
+              description: "Machine-readable error code. Stable across versions."
+            message:
+              type: string
+              example: "amount must be greater than 0"
+              description: "Human-readable description. Do not parse this string programmatically."
+            details:
+              description: "Additional structured error information. **Present only when available** (the key is omitted otherwise)."
+            request_id:
+              type: string
+              example: 9f6f63ce-7a45-4f9b-9c1d-2a52a113b8d0
+              description: "UUID of this request (same as the `X-Request-Id` response header). Include it in all support requests."
+
+  responses:
+    BadRequest:
+      description: |
+        Bad request — malformed JSON, missing headers, or invalid query parameters.
+        Codes: `invalid_json`, `parameter_missing`, `missing_parameter`, `invalid_parameter`,
+        `idempotency_required`, `missing_signing_headers`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            idempotency_required:
+              summary: Missing Idempotency-Key header
+              value:
+                error:
+                  code: idempotency_required
+                  message: "Idempotency-Key header is required"
+                  request_id: 9f6f63ce-7a45-4f9b-9c1d-2a52a113b8d0
+            invalid_json:
+              summary: Malformed JSON body
+              value:
+                error:
+                  code: invalid_json
+                  message: "Request body is not valid JSON. Check for unescaped line breaks or control characters inside string values."
+                  request_id: 9f6f63ce-7a45-4f9b-9c1d-2a52a113b8d0
+            invalid_parameter:
+              summary: Invalid query parameter
+              value:
+                error:
+                  code: invalid_parameter
+                  message: "status must be one of: pending, processing, succeeded, failed, voided"
+                  request_id: 9f6f63ce-7a45-4f9b-9c1d-2a52a113b8d0
+            missing_signing_headers:
+              summary: HMAC signing headers absent
+              value:
+                error:
+                  code: missing_signing_headers
+                  message: "Signing headers required for this API key"
+                  request_id: 9f6f63ce-7a45-4f9b-9c1d-2a52a113b8d0
+
+    Unauthorized:
+      description: "Unauthorized — missing/invalid API key (`unauthorized`) or failed HMAC verification (`invalid_signature`)."
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            unauthorized:
+              summary: Missing or invalid API key
+              value:
+                error:
+                  code: unauthorized
+                  message: "No valid API key provided. Check your Authorization header."
+                  request_id: 9f6f63ce-7a45-4f9b-9c1d-2a52a113b8d0
+            invalid_signature:
+              summary: HMAC signature mismatch
+              value:
+                error:
+                  code: invalid_signature
+                  message: "Request signature verification failed"
+                  request_id: 9f6f63ce-7a45-4f9b-9c1d-2a52a113b8d0
+
+    Forbidden:
+      description: |
+        Forbidden — insufficient API key scope (`forbidden`), request IP not allowlisted
+        (`forbidden_ip`), or a test-mode key used on an endpoint that creates a payment or
+        disbursement (`test_key_not_permitted`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            forbidden:
+              summary: Insufficient scope
+              value:
+                error:
+                  code: forbidden
+                  message: "API key does not have scope: disbursements:write"
+                  request_id: 9f6f63ce-7a45-4f9b-9c1d-2a52a113b8d0
+            forbidden_ip:
+              summary: IP not allowlisted
+              value:
+                error:
+                  code: forbidden_ip
+                  message: "Request IP 203.0.113.10 is not allowed"
+                  request_id: 9f6f63ce-7a45-4f9b-9c1d-2a52a113b8d0
+            test_key_not_permitted:
+              summary: Test-mode key on a money-moving endpoint
+              value:
+                error:
+                  code: test_key_not_permitted
+                  message: "Test-mode API keys (sk_test_) cannot perform live money movement. Use a live key (sk_live_)."
+                  request_id: 9f6f63ce-7a45-4f9b-9c1d-2a52a113b8d0
+
+    NotFound:
+      description: "Not found — resource does not exist or belongs to another account."
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: not_found
+              message: "No payment found with ID pay_01JRXYZ1234ABCDEF."
+              request_id: 9f6f63ce-7a45-4f9b-9c1d-2a52a113b8d0
+
+    Conflict:
+      description: |
+        Conflict — duplicate `merchant_reference_id` (`duplicate_reference`, payments only),
+        the same `Idempotency-Key` reused with different parameters (`idempotency_conflict`),
+        or the original request is still in flight (`idempotency_in_progress`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            duplicate_reference:
+              summary: merchant_reference_id already used
+              value:
+                error:
+                  code: duplicate_reference
+                  message: "merchant_reference_id already exists"
+                  request_id: 9f6f63ce-7a45-4f9b-9c1d-2a52a113b8d0
+            idempotency_conflict:
+              summary: Idempotency-Key reused with different parameters
+              value:
+                error:
+                  code: idempotency_conflict
+                  message: "Idempotency-Key reused with different request parameters"
+                  request_id: 9f6f63ce-7a45-4f9b-9c1d-2a52a113b8d0
+            idempotency_in_progress:
+              summary: Original request still processing
+              value:
+                error:
+                  code: idempotency_in_progress
+                  message: "Request with this Idempotency-Key is still being processed"
+                  request_id: 9f6f63ce-7a45-4f9b-9c1d-2a52a113b8d0
+
+    UnprocessableEntity:
+      description: |
+        Unprocessable — request is well-formed but semantically invalid. Codes:
+        `missing_parameter`, `invalid_parameter`, `insufficient_balance`,
+        `no_available_provider`, `provider_unavailable`, `fraud_declined`, `create_failed`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            missing_parameter:
+              summary: Required field absent
+              value:
+                error:
+                  code: missing_parameter
+                  message: "merchant_reference_id is required"
+                  request_id: 9f6f63ce-7a45-4f9b-9c1d-2a52a113b8d0
+            invalid_parameter:
+              summary: Invalid field value
+              value:
+                error:
+                  code: invalid_parameter
+                  message: "amount must be an integer in PHP minor units (centavos), not a decimal. Send 150050 for 1,500.50 PHP"
+                  request_id: 9f6f63ce-7a45-4f9b-9c1d-2a52a113b8d0
+            insufficient_balance:
+              summary: Insufficient wallet balance
+              value:
+                error:
+                  code: insufficient_balance
+                  message: "Wallet balance is insufficient for this disbursement."
+                  request_id: 9f6f63ce-7a45-4f9b-9c1d-2a52a113b8d0
+            no_available_provider:
+              summary: No provider account configured for channel
+              value:
+                error:
+                  code: no_available_provider
+                  message: "No provider account is available for channel 'qrph'."
+                  request_id: 9f6f63ce-7a45-4f9b-9c1d-2a52a113b8d0
+            provider_unavailable:
+              summary: Routed provider/merchant is inactive
+              value:
+                error:
+                  code: provider_unavailable
+                  message: "This organization is inactive. Please contact support."
+                  request_id: 9f6f63ce-7a45-4f9b-9c1d-2a52a113b8d0
+            fraud_declined:
+              summary: Blocked by fraud screening
+              value:
+                error:
+                  code: fraud_declined
+                  message: "Transaction declined for security review"
+                  request_id: 9f6f63ce-7a45-4f9b-9c1d-2a52a113b8d0
+            create_failed:
+              summary: Creation failed (generic fallback when no specific code applies)
+              value:
+                error:
+                  code: create_failed
+                  message: "Unable to create the payment."
+                  request_id: 9f6f63ce-7a45-4f9b-9c1d-2a52a113b8d0
+
+    TooManyRequests:
+      description: "Rate limit exceeded."
+      headers:
+        Retry-After:
+          description: "Seconds to wait before retrying."
+          schema:
+            type: integer
+            example: 60
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: rate_limit_exceeded
+              message: "Too many requests. Retry after 60 seconds."
+              details:
+                path: /v1/payments
+              request_id: 9f6f63ce-7a45-4f9b-9c1d-2a52a113b8d0
+
+    InternalServerError:
+      description: |
+        Internal error — unexpected server fault (`internal_error`), provider misconfiguration
+        (`provider_configuration_error`, e.g. a payment provider missing required credentials),
+        or merchant ledger misconfiguration (`missing_ledger_accounts`, disbursements only).
+        Contact support. Safe to retry with the same `Idempotency-Key`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: internal_error
+              message: "An unexpected error occurred."
+              request_id: 9f6f63ce-7a45-4f9b-9c1d-2a52a113b8d0
+
+    BadGateway:
+      description: |
+        Bad gateway (`upstream_failure`) — the downstream payment provider rejected the
+        checkout request with a non-retryable error. The payment record **was** created and
+        is marked `failed`; retrieve it with `GET /v1/payments/{id}` or create a new payment
+        with a fresh `merchant_reference_id` and `Idempotency-Key`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: upstream_failure
+              message: "This organization is inactive. Please contact support."
+              request_id: 9f6f63ce-7a45-4f9b-9c1d-2a52a113b8d0
+
+# ────────────────────────────────────────────────────────────────
+# WEBHOOK EVENT SCHEMAS
+# ────────────────────────────────────────────────────────────────
+
+webhooks:
+  payment.succeeded:
+    post:
+      summary: Payment succeeded
+      description: "Fired when a payment is confirmed. Safe to fulfill the order at this point."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookEvent'
+            example:
+              id: evt_4f9b9c1d2a52a113b8d0aa01
+              object: event
+              type: payment.succeeded
+              api_version: "2026-04-14"
+              created: 1713083700
+              created_at: "2026-04-14T08:35:00Z"
+              data:
+                object:
+                  id: pay_01JRXYZ1234ABCDEF
+                  object: payment
+                  merchant_reference_id: ORDER-2026-00123
+                  status: succeeded
+                  amount: 150000
+                  amount_decimal: "1500.00"
+                  currency: PHP
+                  checkout_url: "https://pay.pearlpay.ph/pay/chk_01JRXYZ1234ABCDEF"
+                  created_at: "2026-04-14T08:30:00Z"
+      responses:
+        '200':
+          description: "Acknowledge receipt. Any `2xx` response is accepted."
+
+  payment.failed:
+    post:
+      summary: Payment failed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookEvent'
+      responses:
+        '200':
+          description: "Acknowledge receipt."
+
+  payment.voided:
+    post:
+      summary: Payment voided
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookEvent'
+      responses:
+        '200':
+          description: "Acknowledge receipt."
+
+  payment.reversed:
+    post:
+      summary: Payment reversed
+      description: "Fired when a payment that had already succeeded is reversed — by an operator in the Dashboard, or automatically when a provider sends a late callback contradicting a confirmed payment. `data.object.status` is `voided`, the same value `payment.voided` carries, so use the event `type` to distinguish a claw-back of collected funds from a payment that was voided before completion."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookEvent'
+      responses:
+        '200':
+          description: "Acknowledge receipt."
+
+  payment.checkout_ready:
+    post:
+      summary: Payment checkout ready
+      description: "Fired when a payment created without a `checkout_url` (a transient provider failure, retried in the background) obtains one. Not sent when checkout succeeds on the first attempt, where `payment.created` already carries the URL."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookEvent'
+      responses:
+        '200':
+          description: "Acknowledge receipt."
+
+  payment.abandoned:
+    post:
+      summary: Payment abandoned
+      description: "Fired when a customer cancels out of a hosted payment link before completing it. `data.object.status` is `failed` — there is no separate `abandoned` status — use the event `type` to distinguish this from a genuine provider failure."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookEvent'
+      responses:
+        '200':
+          description: "Acknowledge receipt."
+
+  disbursement.paid:
+    post:
+      summary: Disbursement paid
+      description: "Fired when a disbursement is confirmed as delivered to the recipient."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookEvent'
+            example:
+              id: evt_2a52a113b8d04f9b9c1daa02
+              object: event
+              type: disbursement.paid
+              api_version: "2026-04-14"
+              created: 1713085200
+              created_at: "2026-04-14T09:00:00Z"
+              data:
+                object:
+                  id: dis_01JRXYZ5678GHIJKL
+                  object: disbursement
+                  merchant_reference_id: PAYOUT-2026-00456
+                  status: paid
+                  amount: 500000
+                  amount_decimal: "5000.00"
+                  currency: PHP
+                  created_at: "2026-04-14T08:30:00Z"
+      responses:
+        '200':
+          description: "Acknowledge receipt."
+
+  disbursement.failed:
+    post:
+      summary: Disbursement failed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookEvent'
+      responses:
+        '200':
+          description: "Acknowledge receipt."
+
+  disbursement.returned:
+    post:
+      summary: Disbursement returned
+      description: "Funds returned by destination bank. Credited back to your wallet."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookEvent'
+      responses:
+        '200':
+          description: "Acknowledge receipt."
+
+  disbursement.canceled:
+    post:
+      summary: Disbursement canceled
+      description: "Disbursement canceled before processing. Funds returned to wallet."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookEvent'
+      responses:
+        '200':
+          description: "Acknowledge receipt."

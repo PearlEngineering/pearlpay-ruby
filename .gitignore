@@ -1,0 +1,13 @@
+/.bundle/
+/coverage/
+/doc/
+/pkg/
+/tmp/
+/vendor/bundle/
+*.gem
+Gemfile.lock
+.yardoc/
+.idea/
+.env
+.env.*
+!.env.example
