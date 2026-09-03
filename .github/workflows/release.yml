@@ -6,6 +6,16 @@ name: Release
 # by this workflow's GitHub Actions identity, never pushed directly by a
 # person. Bump lib/pearlpay/version.rb on main first, then dispatch this
 # workflow.
+#
+# Prerequisite, not yet done: the "release" environment below does not exist
+# yet (0 environments configured on this repo as of this commit) — creating
+# it with pioryan as required reviewer, restricted to main, and registering
+# the RubyGems trusted publisher against this workflow file are both
+# blocked on the repo going public first. Until the trusted publisher is
+# registered, any dispatch fails at RubyGems' OIDC exchange regardless of
+# environment state; that is a side effect, not this workflow's approval
+# gate, so don't dispatch this before the environment is actually created
+# and protected.
 on:
   workflow_dispatch:
     inputs:
@@ -17,8 +27,8 @@ permissions:
   contents: read
 
 jobs:
-  # Runs with read-only credentials, before the release environment's approval
-  # gate — so reviewing "should this be released" only ever has to weigh an
+  # Runs with read-only credentials, before the release job's approval gate —
+  # so reviewing "should this be released" only ever has to weigh an
   # already-validated commit, and the test/lint steps never run with the
   # write + OIDC credentials the release job holds.
   validate:
@@ -26,16 +36,23 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Require dispatch from main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Release can only be dispatched from main (got ${{ github.ref }})."
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
         with:
           bundler-cache: true
           ruby-version: "3.4"
       - name: Verify requested version matches lib/pearlpay/version.rb
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
         run: |
           actual=$(ruby -e 'require "./lib/pearlpay/version"; puts PearlPay::VERSION')
-          if [ "$actual" != "${{ inputs.version }}" ]; then
-            echo "::error::lib/pearlpay/version.rb has ${actual}, but you requested ${{ inputs.version }}. Bump and merge the version first."
+          if [ "$actual" != "$REQUESTED_VERSION" ]; then
+            echo "::error::lib/pearlpay/version.rb has ${actual}, but you requested ${REQUESTED_VERSION}. Bump and merge the version first."
             exit 1
           fi
       - name: Unit and contract specs
@@ -46,11 +63,10 @@ jobs:
   release:
     needs: validate
     runs-on: ubuntu-latest
-    # Requires a "release" trusted publisher + environment configured on
-    # rubygems.org (see https://guides.rubygems.org/trusted-publishing/) and,
-    # in this repo's GitHub environment settings, pioryan as the sole required
-    # reviewer — nothing below runs until that approval is given, and by the
-    # time it's requested `validate` has already passed.
+    # See the prerequisite note at the top of this file: this environment does
+    # not exist yet. Once it's created with pioryan as required reviewer,
+    # nothing below will run until that approval is given, and by the time
+    # it's requested `validate` will already have passed.
     environment: release
     permissions:
       contents: write # rake release tags + pushes the release tag

@@ -58,6 +58,15 @@ namespace :openapi do
     HEADER
     contents = vendor_header + contents.sub(/\A(?:#.*\n)+/, "")
 
+    # The source spec's guide links are relative (meaningful only inside the
+    # main API app); rewrite them to absolute so they still resolve once
+    # vendored into this standalone SDK repo. This runs on every vendor, so it
+    # can't regress the way the rest of the public-flip scrub could — see
+    # spec/contract/vendor_hygiene_spec.rb for the guard on the parts that
+    # can't be mechanically rewritten (they require the source to already be
+    # clean).
+    contents = contents.gsub(%r{(?<=[(\s])/api-docs/guides/}, "https://api.pearlpay.io/api-docs/guides/")
+
     target = File.expand_path("spec/contract/openapi.yaml", __dir__)
     File.write(target, contents)
     sha = Digest::SHA256.hexdigest(contents)

@@ -71,8 +71,8 @@ info:
     ## Versioning
 
     Pin a specific API version with the `X-Api-Version: YYYY-MM-DD` request header.
-    If omitted, the server uses its default (**`2026-04-14`** in this codebase) for
-    serializers and backwards-compatible parsing.
+    If omitted, the server uses its current default (**`2026-04-14`**) for response
+    shapes and backwards-compatible parsing.
 
     ## Idempotency
 
