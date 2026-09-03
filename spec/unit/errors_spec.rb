@@ -87,7 +87,8 @@ RSpec.describe PearlPay::APIError do
         }
     end
 
-    it "exposes retry_after on RateLimitError and tolerates a missing request_id" do
+    it "exposes retry_after on RateLimitError and falls back to the SDK-generated " \
+       "request_id when the server sends none" do
       stub_request(:get, "#{SpecSupport::BASE}/v1/payments")
         .to_return(status: 429, body: JSON.generate(error: { code: "rate_limit_exceeded",
                                                              message: "slow down" }),
@@ -95,7 +96,7 @@ RSpec.describe PearlPay::APIError do
       expect { build_client.v1.payments.list(opts: { max_network_retries: 0 }) }
         .to raise_error(PearlPay::RateLimitError) { |e|
           expect(e.retry_after).to eq(60)
-          expect(e.request_id).to be_nil
+          expect(e.request_id).to match(/\A[0-9a-f-]{36}\z/)
         }
     end
 

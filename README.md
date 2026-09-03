@@ -152,8 +152,9 @@ page.next_cursor  # meta.next_starting_after
 - `payments.create`, `disbursements.create`, and `payment_links.checkout_url` **require**
   an `idempotency_key:` you generate and persist (per logical operation, ≤ 255 chars).
   Keys are scoped per merchant — never reuse one across endpoints. Keys expire after 24 h.
-- The SDK automatically retries **transport failures only** on those creates (same key,
-  identical bytes, fresh signing headers). A received 5xx is **never** auto-retried:
+- The SDK automatically retries **transport failures, 429, and the one retryable
+  `409 idempotency_in_progress`** (capped at 2 short waits) on those creates — same key,
+  identical bytes, fresh signing headers. A **received** 5xx is **never** auto-retried:
   the server caches error outcomes under your key, and on `502 upstream_failure` the
   payment **was created** (marked `failed`, keeping its `merchant_reference_id`) — a
   fresh attempt needs a new key *and* a new reference.
@@ -325,7 +326,8 @@ PEARLPAY_OPENAPI_SOURCE=/path/to/openapi.yaml bundle exec rake openapi:vendor
 `spec/integration` exercises the golden paths against a real server instead
 of WebMock fixtures. It's opt-in — every example is skipped unless
 `PEARLPAY_INTEGRATION=1` is set, and the rest of the suite keeps WebMock
-active regardless.
+active regardless. This is a PearlPay-maintainer workflow: it requires a
+local instance of the PearlPay API itself, which is not part of this repo.
 
 1. Start a local instance of the PearlPay API with a seeded merchant.
    `PEARLPAY_API_BASE` defaults to `http://localhost:3000`; never point it at

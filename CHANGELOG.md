@@ -23,6 +23,26 @@ Security fix and public-repo hardening ahead of open-sourcing.
 - The vendored OpenAPI contract (`spec/contract/openapi.yaml`) is now
   licensed MIT, matching the SDK; see the License section in the
   README for the trademark carve-out.
+- **Bug fix**: `Errno::ETIMEDOUT`, `Errno::ECONNABORTED`, and
+  `Errno::ENETUNREACH` were not recognized as transport failures and
+  escaped `Requestor#execute` unrescued, bypassing retries and the
+  `PearlPay::ConnectionError`/`TimeoutError` contract entirely.
+  `ETIMEDOUT` now maps to `PearlPay::TimeoutError` (instrumentation
+  `error_code: "timeout"`), and `ECONNABORTED`/`ENETUNREACH` map to
+  `PearlPay::ConnectionError`, same as the other connection-reset
+  errors.
+- **Bug fix**: the request id the SDK sends on `X-Request-Id` is now
+  used as the `request_id` on `APIResponse`/`APIError` when a load
+  balancer or the server itself drops that header from the response —
+  previously both `error.request_id` and `last_response.request_id`
+  went `nil` in that case even though the SDK had a usable id. The
+  server's own `X-Request-Id`, when present, still takes precedence.
+- **Bug fix**: `PearlPay::ListObject#to_h` returned the list's live
+  internal hash, so mutating a caller's copy (e.g. `list.to_h["data"]
+  << ...`) silently corrupted later reads (`#data`, `#meta`,
+  `#has_more?`, ...) on that same list. `ListObject` is now
+  deep-copied and deep-frozen on construction, matching
+  `PearlPay::Object`'s existing read-only contract.
 
 ## 0.3.1 — 2026-09-02
 

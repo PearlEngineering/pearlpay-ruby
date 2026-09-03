@@ -4,6 +4,7 @@
 /pkg/
 /tmp/
 /vendor/bundle/
+/.claude/worktrees/
 *.gem
 Gemfile.lock
 .yardoc/
