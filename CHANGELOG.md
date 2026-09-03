@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- The vendored OpenAPI contract (`spec/contract/openapi.yaml`) no longer
+  carries the main API repo's canonical-source header, Postman/CI-job
+  references, or internal-detail leaks (`bin/rails`, `ProviderCapability`,
+  a dead design-doc link, relative `/api-docs/guides/...` links). `rake
+  openapi:vendor` now rewrites the header and absolutizes guide links on
+  every refresh; `spec/contract/vendor_hygiene_spec.rb` fails the build if
+  the remaining hand-scrubbed leaks (which the upstream source can't yet
+  guarantee are gone) ever reappear.
+- Added `.github/workflows/release.yml`: a manual, RubyGems
+  trusted-publishing release workflow (OIDC, no stored credentials), split
+  into a read-only `validate` job and a `release` job gated by a GitHub
+  environment. Not yet usable — the environment and RubyGems trusted
+  publisher still need to be configured.
+
 ## 0.3.2 — 2026-09-02
 
 Security fix and public-repo hardening ahead of open-sourcing.

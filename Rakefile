@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "bundler/gem_tasks"
 require "rspec/core/rake_task"
 require "rubocop/rake_task"
 
@@ -46,6 +47,25 @@ namespace :openapi do
       abort "openapi.yaml declares operations the SDK does not implement:\n  " \
             "#{unknown.join("\n  ")}\nImplement them (or update the registry) before vendoring."
     end
+
+    vendor_header = <<~HEADER
+      # This file is vendored from the PearlPay API's canonical OpenAPI spec.
+      # Refresh it with:
+      #
+      #   PEARLPAY_OPENAPI_SOURCE=/path/to/openapi.yaml bundle exec rake openapi:vendor
+      #
+      # Do not hand-edit — edit the source spec and re-vendor instead.
+    HEADER
+    contents = vendor_header + contents.sub(/\A(?:#.*\n)+/, "")
+
+    # The source spec's guide links are relative (meaningful only inside the
+    # main API app); rewrite them to absolute so they still resolve once
+    # vendored into this standalone SDK repo. This runs on every vendor, so it
+    # can't regress the way the rest of the public-flip scrub could — see
+    # spec/contract/vendor_hygiene_spec.rb for the guard on the parts that
+    # can't be mechanically rewritten (they require the source to already be
+    # clean).
+    contents = contents.gsub(%r{(?<=[(\s])/api-docs/guides/}, "https://api.pearlpay.io/api-docs/guides/")
 
     target = File.expand_path("spec/contract/openapi.yaml", __dir__)
     File.write(target, contents)
