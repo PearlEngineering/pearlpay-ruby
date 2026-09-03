@@ -1,0 +1,67 @@
+name: Release
+
+# Manual trigger only — no `push: tags: v*` trigger. `rake release` (invoked by
+# rubygems/release-gem below) creates and pushes the `vX.Y.Z` tag itself using
+# the release job's contents:write permission, so the tag is only ever created
+# by this workflow's GitHub Actions identity, never pushed directly by a
+# person. Bump lib/pearlpay/version.rb on main first, then dispatch this
+# workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, exactly as in lib/pearlpay/version.rb (e.g. 0.4.0)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Runs with read-only credentials, before the release environment's approval
+  # gate — so reviewing "should this be released" only ever has to weigh an
+  # already-validated commit, and the test/lint steps never run with the
+  # write + OIDC credentials the release job holds.
+  validate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        with:
+          bundler-cache: true
+          ruby-version: "3.4"
+      - name: Verify requested version matches lib/pearlpay/version.rb
+        run: |
+          actual=$(ruby -e 'require "./lib/pearlpay/version"; puts PearlPay::VERSION')
+          if [ "$actual" != "${{ inputs.version }}" ]; then
+            echo "::error::lib/pearlpay/version.rb has ${actual}, but you requested ${{ inputs.version }}. Bump and merge the version first."
+            exit 1
+          fi
+      - name: Unit and contract specs
+        run: bundle exec rspec
+      - name: RuboCop
+        run: bundle exec rubocop
+
+  release:
+    needs: validate
+    runs-on: ubuntu-latest
+    # Requires a "release" trusted publisher + environment configured on
+    # rubygems.org (see https://guides.rubygems.org/trusted-publishing/) and,
+    # in this repo's GitHub environment settings, pioryan as the sole required
+    # reviewer — nothing below runs until that approval is given, and by the
+    # time it's requested `validate` has already passed.
+    environment: release
+    permissions:
+      contents: write # rake release tags + pushes the release tag
+      id-token: write # required for RubyGems OIDC trusted publishing
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        with:
+          bundler-cache: true
+          ruby-version: "3.4"
+      - name: Tag, build, and push to RubyGems.org
+        uses: rubygems/release-gem@7f9650160c1a4e7989fdc9855807bdbd421d8b6b # v1.4.1
