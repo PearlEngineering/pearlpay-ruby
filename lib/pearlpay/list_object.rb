@@ -19,7 +19,10 @@ module PearlPay
     attr_reader :last_response
 
     def initialize(data, last_response = nil, next_page_fetcher: nil)
-      @data = data
+      # Deep-copied and deep-frozen up front, same as PearlPay::Object: #to_h
+      # must never hand back a hash the caller can mutate to corrupt this
+      # list's later reads (#data, #meta, #has_more?, ...).
+      @data = deep_dup_freeze(data)
       @last_response = last_response
       @next_page_fetcher = next_page_fetcher
     end
@@ -112,6 +115,15 @@ module PearlPay
     def raw_items
       key = ARRAY_KEYS.find { |k| @data[k].is_a?(Array) }
       key ? @data[key] : nil
+    end
+
+    def deep_dup_freeze(value)
+      case value
+      when Hash then value.transform_values { |v| deep_dup_freeze(v) }.freeze
+      when Array then value.map { |v| deep_dup_freeze(v) }.freeze
+      when String then value.dup.freeze
+      else value.freeze
+      end
     end
   end
 end

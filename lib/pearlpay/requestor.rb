@@ -19,9 +19,10 @@ module PearlPay
   # error mapping -> instrumentation. All per-request state is local to the
   # #execute call; one Requestor is safely shared across threads.
   class Requestor
-    TRANSPORT_TIMEOUT_ERRORS = [Net::OpenTimeout, Net::ReadTimeout, Net::WriteTimeout].freeze
+    TRANSPORT_TIMEOUT_ERRORS = [Net::OpenTimeout, Net::ReadTimeout, Net::WriteTimeout, Errno::ETIMEDOUT].freeze
     TRANSPORT_CONNECTION_ERRORS = [
       Errno::ECONNRESET, Errno::ECONNREFUSED, Errno::EHOSTUNREACH, Errno::EPIPE,
+      Errno::ECONNABORTED, Errno::ENETUNREACH,
       SocketError, EOFError, IOError, OpenSSL::SSL::SSLError
     ].freeze
 
@@ -91,7 +92,7 @@ module PearlPay
           raise transport_error(e, uri)
         end
 
-        api_response = APIResponse.new(http_status: raw.status, headers: raw.headers)
+        api_response = APIResponse.new(http_status: raw.status, headers: raw.headers, request_id: request_id)
 
         if (200..299).cover?(raw.status)
           instrument(operation, status: raw.status, started: started, attempt: attempt,

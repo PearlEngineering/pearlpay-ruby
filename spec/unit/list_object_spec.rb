@@ -117,4 +117,34 @@ RSpec.describe PearlPay::ListObject do
       expect(partners["rail"]).to eq("instapay")
     end
   end
+
+  describe "immutability" do
+    let(:data) do
+      { "object" => "list", "data" => [{ "id" => "pay_1", "object" => "payment" }],
+        "meta" => { "page" => 1, "total_pages" => 2 } }
+    end
+    let(:list) { described_class.new(data) }
+
+    it "returns a frozen to_h that cannot mutate the list's internal state" do
+      result = list.to_h
+      expect(result).to be_frozen
+      expect(result["data"]).to be_frozen
+      expect(result["meta"]).to be_frozen
+      expect { result["data"] << { "id" => "pay_2" } }.to raise_error(FrozenError)
+      expect { result["meta"]["page"] = 2 }.to raise_error(FrozenError)
+      expect(list.data.size).to eq(1)
+      expect(list.meta.page).to eq(1)
+    end
+
+    it "copies on construction and never shares identity with the caller's own input" do
+      input = { "object" => "list", "data" => [{ "id" => +"pay_1" }], "meta" => { "page" => 1 } }
+      wrapped = described_class.new(input)
+
+      expect(input).not_to be_frozen
+      expect(input["data"]).not_to be_frozen
+
+      input["data"] << { "id" => "pay_2-injected" }
+      expect(wrapped.data.size).to eq(1)
+    end
+  end
 end

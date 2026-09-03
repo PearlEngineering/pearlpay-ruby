@@ -42,6 +42,29 @@ RSpec.describe "Instrumentation" do
     expect(events.map { |e| e[:request_id] }.uniq.size).to eq(3)
   end
 
+  it "reports error_code \"timeout\" for Errno::ETIMEDOUT, distinct from other transport failures" do
+    events = []
+    stub_request(:get, "#{SpecSupport::BASE}/v1/payments/pay_1")
+      .to_raise(Errno::ETIMEDOUT).then
+      .to_return(status: 200, body: payment_body, headers: json_headers)
+
+    build_client(events: events).v1.payments.retrieve("pay_1", opts: { max_network_retries: 1 })
+
+    expect(events.map { |e| e[:error_code] }).to eq(["timeout", nil])
+  end
+
+  it "reports error_code \"connection_error\" for Errno::ECONNABORTED and Errno::ENETUNREACH" do
+    events = []
+    stub_request(:get, "#{SpecSupport::BASE}/v1/payments/pay_1")
+      .to_raise(Errno::ECONNABORTED).then
+      .to_raise(Errno::ENETUNREACH).then
+      .to_return(status: 200, body: payment_body, headers: json_headers)
+
+    build_client(events: events).v1.payments.retrieve("pay_1", opts: { max_network_retries: 2 })
+
+    expect(events.map { |e| e[:error_code] }).to eq(%w[connection_error connection_error] + [nil])
+  end
+
   it "reports idempotent replays" do
     events = []
     stub_request(:post, "#{SpecSupport::BASE}/v1/payments")

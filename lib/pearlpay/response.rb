@@ -19,7 +19,10 @@ module PearlPay
     def initialize(http_status:, headers:, request_id: nil)
       @http_status = http_status
       @headers = sanitize(headers)
-      @request_id = request_id || @headers["x-request-id"]
+      # The server's own X-Request-Id wins when present (it's what server-side
+      # logs are keyed on); the SDK-generated id is only a fallback for when a
+      # load balancer or the server itself drops the response header.
+      @request_id = @headers["x-request-id"] || request_id
       freeze
     end
 

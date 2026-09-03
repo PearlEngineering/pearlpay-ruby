@@ -232,6 +232,13 @@ RSpec.describe PearlPay::Requestor do
       expect(payment.last_response.idempotent_replay?).to be(true)
     end
 
+    it "falls back to the SDK-generated request id when the server sends none" do
+      stub_request(:get, "#{SpecSupport::BASE}/v1/payments/pay_1")
+        .to_return(status: 200, body: payment_body, headers: json_headers)
+      payment = build_client.v1.payments.retrieve("pay_1")
+      expect(payment.last_response.request_id).to match(/\A\h{8}-\h{4}-\h{4}-\h{4}-\h{12}\z/)
+    end
+
     it "passes wallet balances through as decimal strings, untouched (D5)" do
       stub_request(:get, "#{SpecSupport::BASE}/v1/wallets/balance")
         .to_return(status: 200,
@@ -271,6 +278,24 @@ RSpec.describe PearlPay::Requestor do
       stub_request(:post, "#{SpecSupport::BASE}/v1/payments/pay_1/void").to_raise(Net::WriteTimeout)
       expect { build_client.raw_request(:post, "/payments/pay_1/void", params: { r: 1 }) }
         .to raise_error(PearlPay::TimeoutError)
+    end
+
+    it "maps Errno::ETIMEDOUT to PearlPay::TimeoutError, not ConnectionError" do
+      stub_request(:post, "#{SpecSupport::BASE}/v1/payments/pay_1/void").to_raise(Errno::ETIMEDOUT)
+      expect { build_client.raw_request(:post, "/payments/pay_1/void", params: { r: 1 }) }
+        .to raise_error(PearlPay::TimeoutError)
+    end
+
+    it "maps Errno::ECONNABORTED to PearlPay::ConnectionError" do
+      stub_request(:post, "#{SpecSupport::BASE}/v1/payments/pay_1/void").to_raise(Errno::ECONNABORTED)
+      expect { build_client.raw_request(:post, "/payments/pay_1/void", params: { r: 1 }) }
+        .to raise_error(PearlPay::ConnectionError)
+    end
+
+    it "maps Errno::ENETUNREACH to PearlPay::ConnectionError" do
+      stub_request(:post, "#{SpecSupport::BASE}/v1/payments/pay_1/void").to_raise(Errno::ENETUNREACH)
+      expect { build_client.raw_request(:post, "/payments/pay_1/void", params: { r: 1 }) }
+        .to raise_error(PearlPay::ConnectionError)
     end
   end
 
