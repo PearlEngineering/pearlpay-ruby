@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "bundler/gem_tasks"
 require "rspec/core/rake_task"
 require "rubocop/rake_task"
 
@@ -46,6 +47,16 @@ namespace :openapi do
       abort "openapi.yaml declares operations the SDK does not implement:\n  " \
             "#{unknown.join("\n  ")}\nImplement them (or update the registry) before vendoring."
     end
+
+    vendor_header = <<~HEADER
+      # This file is vendored from the PearlPay API's canonical OpenAPI spec.
+      # Refresh it with:
+      #
+      #   PEARLPAY_OPENAPI_SOURCE=/path/to/openapi.yaml bundle exec rake openapi:vendor
+      #
+      # Do not hand-edit — edit the source spec and re-vendor instead.
+    HEADER
+    contents = vendor_header + contents.sub(/\A(?:#.*\n)+/, "")
 
     target = File.expand_path("spec/contract/openapi.yaml", __dir__)
     File.write(target, contents)

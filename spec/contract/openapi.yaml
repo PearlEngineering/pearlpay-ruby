@@ -1,12 +1,9 @@
-# This file is the canonical source for the /v1 API contract.
+# This file is vendored from the PearlPay API's canonical OpenAPI spec.
+# Refresh it with:
 #
-# The Postman collection and environment next to it are GENERATED from this file.
-# After editing this spec, regenerate and commit them in the same change:
+#   PEARLPAY_OPENAPI_SOURCE=/path/to/openapi.yaml bundle exec rake openapi:vendor
 #
-#   npm exec --yes --package=openapi-to-postmanv2@6.3.3 -- \
-#     node script/regenerate_postman_from_openapi.mjs
-#
-# The `api_docs_drift` CI job (.github/workflows/ci.yml) fails the PR otherwise.
+# Do not hand-edit — edit the source spec and re-vendor instead.
 openapi: 3.1.0
 
 info:
@@ -20,8 +17,7 @@ info:
     Design goals align with common **Stripe-caliber** API conventions: Bearer authentication,
     typed JSON resources (`object`), integer amounts in the smallest currency unit, dated
     versioning (`X-Api-Version`), idempotency for `POST`, signed webhooks, and structured
-    errors with stable `code` strings. See [design and Stripe parity](./design-and-stripe-parity.md)
-    for a detailed comparison.
+    errors with stable `code` strings.
 
     ## Base URLs
 
@@ -29,7 +25,10 @@ info:
     |-------------|----------|
     | Production  | `https://api.pearlpay.io/v1` |
     | Staging     | `https://staging.api.pearlpay.io/v1` |
-    | Local development | `http://localhost:3000/v1` (default server when opening `/api-docs` while running `bin/rails server`) |
+
+    Staging is a fully supported environment for integration testing, not an internal
+    deployment — point your test suite at it before going live. It uses the same
+    `sk_test_`/`sk_live_` key model as Production; see Authentication below.
 
     ## Authentication
 
@@ -59,7 +58,7 @@ info:
 
     ## Fees
 
-    Fees are still computed server-side (per `ProviderCapability`) and applied to the amount the
+    Fees are still computed server-side and applied to the amount the
     customer pays, but the **API resources no longer break them out**. Payment and disbursement
     responses are intentionally minimal — `amount` is the **total** amount, and the fee/settlement
     detail (facilitation fee, WHT, platform fees, net settlement, the calculator snapshot) lives in
@@ -87,12 +86,12 @@ info:
     ## Request signing (HMAC)
 
     **`POST /disbursements` requires** `X-Request-Timestamp`, `X-Request-Nonce`, and
-    `X-Signature` ([Request signing guide](/api-docs/guides/request-signing)). `POST /payments` uses signing only when
+    `X-Signature` ([Request signing guide](https://api.pearlpay.io/api-docs/guides/request-signing)). `POST /payments` uses signing only when
     your API key has `require_signing`, or when you send these headers (they are then verified).
 
   externalDocs:
     description: Request signing (HMAC) — full guide
-    url: /api-docs/guides/request-signing
+    url: https://api.pearlpay.io/api-docs/guides/request-signing
 
   contact:
     name: PearlPay Developer Support
@@ -182,7 +181,7 @@ paths:
         payment record is created — on a non-retryable failure it is marked `failed`.
 
         Optional HMAC headers (`X-Request-Timestamp`, `X-Request-Nonce`, `X-Signature`) are
-        required when the API key has `require_signing`, or verified when sent. See [Request signing](/api-docs/guides/request-signing).
+        required when the API key has `require_signing`, or verified when sent. See [Request signing](https://api.pearlpay.io/api-docs/guides/request-signing).
 
         **Required API key scope:** `payments:write`.
       parameters:
@@ -387,7 +386,7 @@ paths:
         (sunset 2026-12-01).
 
         **HMAC signing is mandatory:** include `X-Request-Timestamp`, `X-Request-Nonce`, and
-        `X-Signature` ([Request signing](/api-docs/guides/request-signing)). Missing headers return `400`.
+        `X-Signature` ([Request signing](https://api.pearlpay.io/api-docs/guides/request-signing)). Missing headers return `400`.
 
         **Required API key scope:** `disbursements:write`.
       parameters:
@@ -1427,7 +1426,7 @@ components:
         Results per page (1–100). Defaults to 20. Values above 100 are clamped to 100;
         zero, negative, or non-numeric values fall back to the default.
 
-    # Optional HMAC request signing — see /api-docs/guides/request-signing
+    # Optional HMAC request signing — see https://api.pearlpay.io/api-docs/guides/request-signing
     RequestTimestamp:
       name: X-Request-Timestamp
       in: header
@@ -1459,7 +1458,7 @@ components:
         type: string
         example: "v1=a1b2c3d4e5f6..."
       description: |
-        `v1=` + hex HMAC-SHA256(`timestamp.nonce.SHA256hex(body)`, signing_secret). See [Request signing guide](/api-docs/guides/request-signing).
+        `v1=` + hex HMAC-SHA256(`timestamp.nonce.SHA256hex(body)`, signing_secret). See [Request signing guide](https://api.pearlpay.io/api-docs/guides/request-signing).
 
     DisbursementRequestTimestamp:
       name: X-Request-Timestamp
@@ -2639,7 +2638,7 @@ components:
       type: object
       description: |
         Standard error envelope returned on all 4xx and 5xx responses.
-        See the [error code reference](/api-docs/guides/errors) for the full list of codes.
+        See the [error code reference](https://api.pearlpay.io/api-docs/guides/errors) for the full list of codes.
       properties:
         error:
           type: object
