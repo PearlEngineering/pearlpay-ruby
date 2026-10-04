@@ -141,7 +141,8 @@ payment.status          # => "failed"
 payment.failure_reason  # => "cancelled_by_merchant"
 ```
 
-Cancelling is naturally idempotent (no `idempotency_key`). A payment the
+Cancelling needs a **live** key (`sk_test_` keys get `403 test_key_not_permitted`)
+and is naturally idempotent (no `idempotency_key`). A payment the
 provider reports as paid raises with `payment_already_succeeded`; a
 `503 status_check_unavailable` fails closed, so retry. A customer can still
 pay an already-displayed QR code after cancellation, so reconcile against

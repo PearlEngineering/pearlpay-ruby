@@ -154,7 +154,10 @@ RSpec.describe "Operation contracts" do
                  "signing_secret" => "whsec_test_fixture_not_a_real_secret",
                  "previous_secret_expires_at" => "2026-10-04T10:00:00Z",
                  "message" => "Store this secret securely; it is shown once." },
-      invoke: ->(client, _params) { client.v1.webhook_endpoints.rotate_signing_secret(path_ids["id"]) }
+      params: { "grace_seconds" => 0 },
+      invoke: lambda { |client, params|
+        client.v1.webhook_endpoints.rotate_signing_secret(path_ids["id"], params)
+      }
     },
     "api_keys.rotate_signing_secret" => {
       status: 200,

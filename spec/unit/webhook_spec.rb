@@ -63,15 +63,23 @@ RSpec.describe PearlPay::Webhook do
       expect_failure(:invalid, secret: "whsec_wrong", previous_signature: "v1=zz")
     end
 
+    it "ignores a non-String previous signature" do
+      expect(verify!(previous_signature: 123)).to be_a(PearlPay::Object)
+      expect(verify!(previous_signature: [old_sig])).to be_a(PearlPay::Object)
+      expect_failure(:invalid, secret: "whsec_wrong", previous_signature: 123)
+    end
+
     it "still requires a well-formed primary signature" do
       expect_failure(:malformed, signature: "bogus", previous_signature: old_sig, secret: old_secret)
     end
 
     it "still enforces the timestamp tolerance" do
       stale = 1_713_083_700 - 1000
-      sig = "v1=#{OpenSSL::HMAC.hexdigest('SHA256', old_secret, "#{stale}.#{payload}")}"
+      sign = ->(key) { "v1=#{OpenSSL::HMAC.hexdigest('SHA256', key, "#{stale}.#{payload}")}" }
+      # Only the previous header matches the configured secret.
       expect_failure(:stale_timestamp, secret: old_secret, timestamp: stale.to_s,
-                                       signature: sig, previous_signature: sig)
+                                       signature: sign.call("whsec_unrelated"),
+                                       previous_signature: sign.call(old_secret))
     end
   end
 

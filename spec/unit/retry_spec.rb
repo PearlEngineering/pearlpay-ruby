@@ -159,6 +159,35 @@ RSpec.describe "Retry behaviour by retry_class" do
     end
   end
 
+  describe "payments.cancel (:natural, no idempotency key)" do
+    let(:url) { "#{SpecSupport::BASE}/v1/payments/pay_1/cancel" }
+
+    it "sends no Idempotency-Key and retries a 503 status_check_unavailable" do
+      stub_request(:post, url)
+        .to_return(status: 503, body: error_body("status_check_unavailable"), headers: json_headers).then
+        .to_return(status: 200, body: payment_body, headers: json_headers)
+      expect(build_client.v1.payments.cancel("pay_1").id).to eq("pay_1")
+      expect(WebMock).to have_requested(:post, url).twice
+      expect(WebMock).not_to(have_requested(:post, url).with { |req| req.headers.key?("Idempotency-Key") })
+    end
+
+    it "raises APIError once retries are exhausted on 503" do
+      stub_request(:post, url)
+        .to_return(status: 503, body: error_body("status_check_unavailable"), headers: json_headers)
+      expect { build_client.v1.payments.cancel("pay_1") }.to raise_error(PearlPay::APIError)
+    end
+
+    %w[payment_already_succeeded payment_in_progress payment_not_cancellable
+       payment_under_review].each do |code|
+      it "raises ConflictError without retrying on 409 #{code}" do
+        stub_request(:post, url)
+          .to_return(status: 409, body: error_body(code), headers: json_headers)
+        expect { build_client.v1.payments.cancel("pay_1") }.to raise_error(PearlPay::ConflictError)
+        expect(WebMock).to have_requested(:post, url).once
+      end
+    end
+  end
+
   describe ":never (duplicate-minting and destructive operations)" do
     it "never retries transport failures on clone" do
       stub_request(:post, "#{SpecSupport::BASE}/v1/payment_links/plink_1/clone").to_timeout
