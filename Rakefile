@@ -69,7 +69,8 @@ namespace :openapi do
 
     # The SDK and this vendored contract are MIT (README, LICENSE); the source
     # spec declares the API itself as proprietary. Keep the SDK's declaration.
-    contents = contents.sub(/^  license:\n    name: Proprietary\n/, "  license:\n    name: MIT\n    identifier: MIT\n")
+    mit_license = "  license:\n    name: MIT\n    identifier: MIT\n"
+    contents = contents.sub(/^  license:\n    name: Proprietary\n/, mit_license)
 
     target = File.expand_path("spec/contract/openapi.yaml", __dir__)
     File.write(target, contents)
