@@ -13,7 +13,9 @@ module PearlPay
           retrieve: { method: "GET", path: "/payments/{id}",
                       retry_class: :read, signing: :never, idempotency: :none },
           list: { method: "GET", path: "/payments",
-                  retry_class: :read, signing: :never, idempotency: :none }
+                  retry_class: :read, signing: :never, idempotency: :none },
+          cancel: { method: "POST", path: "/payments/{id}/cancel",
+                    retry_class: :natural, signing: :never, idempotency: :none }
         }.freeze
 
         # POST /v1/payments — idempotency_key is required (D2: the SDK never
@@ -31,6 +33,15 @@ module PearlPay
         # (from, to, status, payment_channel, query).
         def list(opts: {}, **filters)
           request(:list, query: filters, opts: opts)
+        end
+
+        # POST /v1/payments/{id}/cancel — cancels a still-pending payment (it
+        # becomes status "failed", failure_reason "cancelled_by_merchant").
+        # Naturally idempotent: no Idempotency-Key. Raises on 409
+        # (payment_already_succeeded, payment_in_progress, payment_not_cancellable,
+        # payment_under_review); 503 status_check_unavailable fails closed, so retry.
+        def cancel(id, opts: {})
+          request(:cancel, path_params: { id: id }, opts: opts)
         end
       end
     end

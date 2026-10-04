@@ -36,6 +36,45 @@ RSpec.describe PearlPay::Webhook do
     expect(event.data.object.id).to eq("pay_01JRXYZ1234ABCDEF")
   end
 
+  describe "previous_signature (secret rotation grace window)" do
+    let(:old_secret) { "whsec_previous_secret_0123456789abcd" }
+    let(:other_sig) do
+      "v1=#{OpenSSL::HMAC.hexdigest('SHA256', 'whsec_unrelated', "#{timestamp}.#{payload}")}"
+    end
+    let(:old_sig) do
+      "v1=#{OpenSSL::HMAC.hexdigest('SHA256', old_secret, "#{timestamp}.#{payload}")}"
+    end
+
+    it "verifies when the primary signature matches" do
+      expect(verify!(previous_signature: other_sig)).to be_a(PearlPay::Object)
+    end
+
+    it "verifies when only the previous signature matches the configured secret" do
+      expect(verify!(secret: old_secret, signature: signature, previous_signature: old_sig))
+        .to be_a(PearlPay::Object)
+    end
+
+    it "fails when neither signature matches" do
+      expect_failure(:invalid, previous_signature: other_sig, secret: "whsec_wrong")
+    end
+
+    it "ignores a malformed previous signature" do
+      expect(verify!(previous_signature: "garbage")).to be_a(PearlPay::Object)
+      expect_failure(:invalid, secret: "whsec_wrong", previous_signature: "v1=zz")
+    end
+
+    it "still requires a well-formed primary signature" do
+      expect_failure(:malformed, signature: "bogus", previous_signature: old_sig, secret: old_secret)
+    end
+
+    it "still enforces the timestamp tolerance" do
+      stale = 1_713_083_700 - 1000
+      sig = "v1=#{OpenSSL::HMAC.hexdigest('SHA256', old_secret, "#{stale}.#{payload}")}"
+      expect_failure(:stale_timestamp, secret: old_secret, timestamp: stale.to_s,
+                                       signature: sig, previous_signature: sig)
+    end
+  end
+
   it "signs the raw body itself, NOT its digest (unlike request signing)" do
     request_style = "v1=#{OpenSSL::HMAC.hexdigest(
       'SHA256', secret, "#{timestamp}.#{Digest::SHA256.hexdigest(payload)}"

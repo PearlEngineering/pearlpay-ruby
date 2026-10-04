@@ -133,6 +133,20 @@ client.raw_request(:get, "/payments/pay_123")  # escape hatch; path is relative 
 Every method accepts `opts:` with `idempotency_key:`, `headers:`, `open_timeout:`,
 `read_timeout:`, and `max_network_retries:`.
 
+## Cancelling a pending payment
+
+```ruby
+payment = client.v1.payments.cancel("pay_01JRXYZ1234ABCDEF")
+payment.status          # => "failed"
+payment.failure_reason  # => "cancelled_by_merchant"
+```
+
+Cancelling is naturally idempotent (no `idempotency_key`). A payment the
+provider reports as paid raises with `payment_already_succeeded`; a
+`503 status_check_unavailable` fails closed, so retry. A customer can still
+pay an already-displayed QR code after cancellation, so reconcile against
+the `payment.succeeded` webhook.
+
 ## Pagination
 
 ```ruby
@@ -289,6 +303,7 @@ post "/webhooks/pearlpay/:tenant_id" do
     payload:   request.body.read,
     timestamp: request.env["HTTP_X_WEBHOOK_TIMESTAMP"],
     signature: request.env["HTTP_X_WEBHOOK_SIGNATURE"],
+    previous_signature: request.env["HTTP_X_WEBHOOK_SIGNATURE_PREVIOUS"], # present only during a rotation grace window
     secret:    tenant.pearlpay_webhook_secret
   )
 
