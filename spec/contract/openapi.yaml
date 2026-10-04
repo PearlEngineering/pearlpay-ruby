@@ -118,7 +118,8 @@ info:
     email: developers@pearlpay.ph
     url: https://developers.pearlpay.io
   license:
-    name: Proprietary
+    name: MIT
+    identifier: MIT
 
 servers:
   - url: https://api.pearlpay.io/v1

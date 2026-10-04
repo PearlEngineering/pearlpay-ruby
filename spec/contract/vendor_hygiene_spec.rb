@@ -18,6 +18,11 @@ RSpec.describe "vendored OpenAPI spec hygiene" do
     expect(raw).not_to match(%r{[(\s]/api-docs/})
   end
 
+  it "declares the MIT license, matching the SDK README/LICENSE" do
+    expect(raw).to match(/^  license:\n    name: MIT\n/)
+    expect(raw).not_to include("name: Proprietary")
+  end
+
   it "has no internal backend/implementation references" do
     ["bin/rails", "ProviderCapability", "localhost:3000", "in this codebase"].each do |leak|
       expect(raw).not_to include(leak), "found internal-detail leak: #{leak.inspect}"
