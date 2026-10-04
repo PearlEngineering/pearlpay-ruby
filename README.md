@@ -125,7 +125,7 @@ client.v1.payment_links.list(**filters)  .retrieve(id)  .update(id, params)
 client.v1.payment_links.disable(id)  .clone(id, params)
 client.v1.payment_links.checkout_url(id, params, idempotency_key:)
 client.v1.webhook_endpoints.create(params)   # response includes whsec_… exactly once
-client.v1.webhook_endpoints.list  .activate(id)  .rotate_signing_secret(id)
+client.v1.webhook_endpoints.list  .activate(id)  .rotate_signing_secret(id, { grace_seconds: 0 })  # body optional
 client.v1.api_keys.rotate_signing_secret(id)
 client.raw_request(:get, "/payments/pay_123")  # escape hatch; path is relative to /v1
 ```
@@ -174,7 +174,7 @@ page.next_cursor  # meta.next_starting_after
   payment **was created** (marked `failed`, keeping its `merchant_reference_id`) — a
   fresh attempt needs a new key *and* a new reference.
 - Reads and converge-to-state writes (`payment_links.update`/`disable`,
-  `webhook_endpoints.activate`) retry transport failures, 429, and 5xx with
+  `webhook_endpoints.activate`, `payments.cancel`) retry transport failures, 429, and 5xx with
   exponential backoff and jitter (`Retry-After` is honored).
 - `payment_links.clone`, `webhook_endpoints.create`, and both
   `rotate_signing_secret` operations are **never retried**: retries would mint

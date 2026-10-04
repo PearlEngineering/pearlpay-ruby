@@ -11,8 +11,8 @@
   `payment_in_progress`, `payment_not_cancellable`, `payment_under_review`)
   raise; `503 status_check_unavailable` fails closed, so retry. The endpoint
   is feature-flagged server-side and returns 404 until enabled.
-- `client.v1.webhook_endpoints.rotate_signing_secret(id, grace_seconds: ...)`
-  now accepts the optional body (`{ grace_seconds: 0 }` revokes the previous
+- `client.v1.webhook_endpoints.rotate_signing_secret(id, { grace_seconds: 0 })`
+  now accepts the optional body (pass a Hash; `grace_seconds: 0` revokes the previous
   secret immediately). Still never retried.
 - `PearlPay::Webhook.verify!` accepts an optional `previous_signature:`
   (the `X-Webhook-Signature-Previous` header sent during a secret-rotation
