@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.0 — 2026-10-05
+
 - Re-vendored the OpenAPI contract from the current API (new operation
   `POST /payments/{id}/cancel`, new error codes such as
   `amount_above_threshold`, webhook rotation grace-window docs).
