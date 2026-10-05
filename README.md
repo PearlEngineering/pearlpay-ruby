@@ -179,8 +179,9 @@ page.next_cursor  # meta.next_starting_after
   `webhook_endpoints.activate`, `payments.cancel`) retry transport failures, 429, and 5xx with
   exponential backoff and jitter. `Retry-After` is honored up to `max_retry_after`
   (default 60s); a longer one raises the underlying error immediately instead of blocking
-  the thread. `0` raises on any server `Retry-After`; below 60 makes rate-limited (429)
-  calls raise rather than wait; `Float::INFINITY` restores uncapped waits.
+  the thread. The cap applies to every retried 429/5xx, including the keyed creates' 429 retries.
+  `0` raises on any positive server `Retry-After` (absent or malformed ones still back off);
+  below 60 makes rate-limited (429) calls raise rather than wait; `Float::INFINITY` restores uncapped waits.
 - `payment_links.clone`, `webhook_endpoints.create`, and both
   `rotate_signing_secret` operations are **never retried**: retries would mint
   duplicates or invalidate a secret you were just shown.

@@ -309,7 +309,7 @@ RSpec.describe "Retry behaviour by retry_class" do
       expect(recorded_sleeps).to eq([3600.0])
     end
 
-    ["abc", "Wed, 21 Oct 2026 07:28:00 GMT", "0", "60abc"].each do |value|
+    ["abc", "Wed, 21 Oct 2026 07:28:00 GMT", "0", "60abc", "60.5"].each do |value|
       it "falls back to backoff for Retry-After #{value.inspect}" do
         stub_request(:get, get_url).to_return(rate_limited(value)).then
                                    .to_return(status: 200, body: payment_body, headers: json_headers)
@@ -324,6 +324,17 @@ RSpec.describe "Retry behaviour by retry_class" do
       expect { build_client.v1.webhook_endpoints.create({ url: "https://m.ph/wh" }) }
         .to raise_error(PearlPay::RateLimitError)
       expect(WebMock).to have_requested(:post, "#{SpecSupport::BASE}/v1/webhook_endpoints").once
+      expect(recorded_sleeps).to be_empty
+    end
+
+    it "raises a keyed create's 429 above the cap without resending the key" do
+      keys = []
+      stub_request(:post, "#{SpecSupport::BASE}/v1/payments")
+        .with { |req| keys << req.headers["Idempotency-Key"] }
+        .to_return(rate_limited("120"))
+      expect { build_client.v1.payments.create({ amount: 1 }, idempotency_key: "k") }
+        .to raise_error(PearlPay::RateLimitError)
+      expect(keys).to eq(["k"])
       expect(recorded_sleeps).to be_empty
     end
 
@@ -345,7 +356,6 @@ RSpec.describe "Retry behaviour by retry_class" do
         parse = described_class.method(:parse_retry_after)
         expect(parse.call("60")).to eq(60.0)
         expect(parse.call(" 5 ")).to eq(5.0)
-        expect(parse.call("1.5")).to eq(1.5)
         ["0", "-3", "abc", "Wed, 21 Oct 2026 07:28:00 GMT", "", nil].each do |v|
           expect(parse.call(v)).to be_nil
         end

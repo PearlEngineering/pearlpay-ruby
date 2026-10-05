@@ -37,14 +37,14 @@ module PearlPay
 
     attr_reader :max_retries, :max_retry_after
 
-    # Delta-seconds Retry-After as a positive Float, else nil. HTTP-dates,
-    # malformed, zero, and negative values are nil (the API only sends integer
+    # Integer delta-seconds Retry-After as a positive Float, else nil. HTTP-dates,
+    # fractional, malformed, zero, and negative values are nil (the API only sends integer
     # seconds) and fall back to jittered backoff, which is bounded at MAX_DELAY.
     def self.parse_retry_after(value)
       return nil unless value.is_a?(String) || value.is_a?(Numeric)
 
       str = value.to_s
-      return nil unless str.match?(/\A\s*\d+(\.\d+)?\s*\z/)
+      return nil unless str.match?(/\A\s*\d+\s*\z/)
 
       seconds = str.to_f
       seconds.positive? ? seconds : nil
@@ -86,8 +86,8 @@ module PearlPay
     # Exponential backoff with full jitter; a server Retry-After wins. Takes the
     # raw header or an already-parsed Float. Never clamps — see #response_decision.
     def delay(retries_so_far, retry_after: nil)
-      parsed = self.class.parse_retry_after(retry_after)
-      return parsed if parsed
+      parsed = retry_after.is_a?(Numeric) ? retry_after.to_f : self.class.parse_retry_after(retry_after)
+      return parsed if parsed&.positive?
 
       cap = [MAX_DELAY, BASE_DELAY * (2**retries_so_far)].min
       @rng.rand * cap
