@@ -87,6 +87,20 @@ RSpec.describe PearlPay::APIError do
         }
     end
 
+    it "exposes retry_after on a non-429 APIError, nil when absent or malformed" do
+      url = "#{SpecSupport::BASE}/v1/payments/pay_1/cancel"
+      {
+        "5" => 5, nil => nil, "soon" => nil
+      }.each do |header, expected|
+        WebMock.reset!
+        headers = header ? json_headers("Retry-After" => header) : json_headers
+        stub_request(:post, url).to_return(status: 503, body: error_body("status_check_unavailable"),
+                                           headers: headers)
+        expect { build_client(max_network_retries: 0).v1.payments.cancel("pay_1") }
+          .to raise_error(described_class) { |e| expect(e.retry_after).to eq(expected) }
+      end
+    end
+
     it "exposes retry_after on RateLimitError and falls back to the SDK-generated " \
        "request_id when the server sends none" do
       stub_request(:get, "#{SpecSupport::BASE}/v1/payments")

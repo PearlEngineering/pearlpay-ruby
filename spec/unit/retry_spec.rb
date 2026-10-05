@@ -235,6 +235,135 @@ RSpec.describe "Retry behaviour by retry_class" do
     end
   end
 
+  describe "Retry-After ceiling" do
+    let(:cancel_url) { "#{SpecSupport::BASE}/v1/payments/pay_1/cancel" }
+    let(:get_url) { "#{SpecSupport::BASE}/v1/payments/pay_1" }
+
+    def rate_limited(retry_after, status: 429, code: "rate_limit_exceeded")
+      { status: status, body: error_body(code), headers: json_headers("Retry-After" => retry_after) }
+    end
+
+    it "raises instead of sleeping on a cancel 503 with Retry-After 3600" do
+      stub_request(:post, cancel_url)
+        .to_return(rate_limited("3600", status: 503, code: "status_check_unavailable"))
+      expect { build_client.v1.payments.cancel("pay_1") }.to raise_error(PearlPay::APIError) { |e|
+        expect(e.code).to eq("status_check_unavailable")
+        expect(e.retry_after).to eq(3600)
+      }
+      expect(WebMock).to have_requested(:post, cancel_url).once
+      expect(recorded_sleeps).to be_empty
+    end
+
+    it "still retries a cancel 503 with the documented 5s Retry-After" do
+      stub_request(:post, cancel_url)
+        .to_return(rate_limited("5", status: 503, code: "status_check_unavailable")).then
+        .to_return(status: 200, body: payment_body, headers: json_headers)
+      build_client.v1.payments.cancel("pay_1")
+      expect(recorded_sleeps).to eq([5.0])
+    end
+
+    it "raises RateLimitError above the cap, sleeps at the cap" do
+      stub_request(:get, get_url).to_return(rate_limited("61"))
+      expect { build_client.v1.payments.retrieve("pay_1") }.to raise_error(PearlPay::RateLimitError)
+      expect(WebMock).to have_requested(:get, get_url).once
+      expect(recorded_sleeps).to be_empty
+
+      WebMock.reset!
+      stub_request(:get, get_url).to_return(rate_limited("60")).then
+                                 .to_return(status: 200, body: payment_body, headers: json_headers)
+      build_client.v1.payments.retrieve("pay_1")
+      expect(recorded_sleeps).to eq([60.0])
+    end
+
+    it "honours a lower client cap" do
+      stub_request(:get, get_url).to_return(rate_limited("60"))
+      expect { build_client(max_retry_after: 30).v1.payments.retrieve("pay_1") }
+        .to raise_error(PearlPay::RateLimitError)
+      expect(recorded_sleeps).to be_empty
+    end
+
+    it "lets a per-request value override the client value in both directions" do
+      stub_request(:get, get_url).to_return(rate_limited("120")).then
+                                 .to_return(status: 200, body: payment_body, headers: json_headers)
+      build_client.v1.payments.retrieve("pay_1", opts: { max_retry_after: 300 })
+      expect(recorded_sleeps).to eq([120.0])
+
+      WebMock.reset!
+      stub_request(:get, get_url).to_return(rate_limited("45"))
+      client = build_client(max_retry_after: 300)
+      expect { client.v1.payments.retrieve("pay_1", opts: { max_retry_after: 30 }) }
+        .to raise_error(PearlPay::RateLimitError)
+    end
+
+    it "treats max_retry_after: 0 as raise-on-any-Retry-After" do
+      stub_request(:get, get_url).to_return(rate_limited("1"))
+      expect { build_client(max_retry_after: 0).v1.payments.retrieve("pay_1") }
+        .to raise_error(PearlPay::RateLimitError)
+      expect(recorded_sleeps).to be_empty
+    end
+
+    it "restores uncapped behaviour with Float::INFINITY" do
+      stub_request(:get, get_url).to_return(rate_limited("3600")).then
+                                 .to_return(status: 200, body: payment_body, headers: json_headers)
+      build_client(max_retry_after: Float::INFINITY).v1.payments.retrieve("pay_1")
+      expect(recorded_sleeps).to eq([3600.0])
+    end
+
+    ["abc", "Wed, 21 Oct 2026 07:28:00 GMT", "0", "60abc"].each do |value|
+      it "falls back to backoff for Retry-After #{value.inspect}" do
+        stub_request(:get, get_url).to_return(rate_limited(value)).then
+                                   .to_return(status: 200, body: payment_body, headers: json_headers)
+        build_client.v1.payments.retrieve("pay_1")
+        expect(recorded_sleeps.size).to eq(1)
+        expect(recorded_sleeps.first).to be_between(0, 0.5)
+      end
+    end
+
+    it "never retries a :never operation, whatever the Retry-After" do
+      stub_request(:post, "#{SpecSupport::BASE}/v1/webhook_endpoints").to_return(rate_limited("3600"))
+      expect { build_client.v1.webhook_endpoints.create({ url: "https://m.ph/wh" }) }
+        .to raise_error(PearlPay::RateLimitError)
+      expect(WebMock).to have_requested(:post, "#{SpecSupport::BASE}/v1/webhook_endpoints").once
+      expect(recorded_sleeps).to be_empty
+    end
+
+    it "applies to raw_request opts" do
+      stub_request(:get, "#{SpecSupport::BASE}/v1/things").to_return(rate_limited("60"))
+      expect { build_client.raw_request(:get, "/things", opts: { max_retry_after: 10 }) }
+        .to raise_error(PearlPay::RateLimitError)
+      expect(recorded_sleeps).to be_empty
+    end
+
+    it "rejects invalid per-request values before any request" do
+      expect { build_client.v1.payments.retrieve("pay_1", opts: { max_retry_after: -1 }) }
+        .to raise_error(ArgumentError, /max_retry_after/)
+      expect(WebMock).not_to have_requested(:get, get_url)
+    end
+
+    describe PearlPay::RetryPolicy do
+      it "parses Retry-After as positive delta-seconds only" do
+        parse = described_class.method(:parse_retry_after)
+        expect(parse.call("60")).to eq(60.0)
+        expect(parse.call(" 5 ")).to eq(5.0)
+        expect(parse.call("1.5")).to eq(1.5)
+        ["0", "-3", "abc", "Wed, 21 Oct 2026 07:28:00 GMT", "", nil].each do |v|
+          expect(parse.call(v)).to be_nil
+        end
+      end
+
+      it "downgrades :retry to :raise only above the cap" do
+        policy = described_class.new(max_retries: 2, max_retry_after: 60)
+        decide = lambda do |ra|
+          policy.response_decision(:read, status: 429, code: "x", retries_so_far: 0,
+                                          in_progress_retries: 0, retry_after: ra)
+        end
+        expect(decide.call(60.0)).to eq(:retry)
+        expect(decide.call(60.1)).to eq(:raise)
+        expect(decide.call(nil)).to eq(:retry)
+      end
+    end
+  end
+
   describe "backoff shape" do
     it "uses exponential caps with full jitter (base 0.5, cap 8)" do
       policy = PearlPay::RetryPolicy.new(max_retries: 10, rng: Random.new(42))

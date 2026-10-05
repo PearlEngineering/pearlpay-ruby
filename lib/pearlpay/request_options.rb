@@ -3,11 +3,13 @@
 module PearlPay
   # Per-call options, accepted as +opts:+ on every service method:
   # idempotency_key:, headers:, open_timeout:, read_timeout:,
-  # max_network_retries:. Validated locally; unknown keys raise.
+  # max_network_retries:, max_retry_after:. Validated locally; unknown keys raise.
   class RequestOptions
-    ALLOWED_KEYS = %i[idempotency_key headers open_timeout read_timeout max_network_retries].freeze
+    ALLOWED_KEYS = %i[idempotency_key headers open_timeout read_timeout max_network_retries
+                      max_retry_after].freeze
 
-    attr_reader :idempotency_key, :headers, :open_timeout, :read_timeout, :max_network_retries
+    attr_reader :idempotency_key, :headers, :open_timeout, :read_timeout, :max_network_retries,
+                :max_retry_after
 
     def initialize(opts)
       raise ArgumentError, "opts must be a Hash" unless opts.is_a?(Hash)
@@ -24,6 +26,7 @@ module PearlPay
       @open_timeout = validate_timeout(:open_timeout, opts[:open_timeout])
       @read_timeout = validate_timeout(:read_timeout, opts[:read_timeout])
       @max_network_retries = validate_retries(opts[:max_network_retries])
+      @max_retry_after = validate_max_retry_after(opts[:max_retry_after])
       freeze
     end
 
@@ -50,6 +53,15 @@ module PearlPay
       unless value.is_a?(Numeric) && value.positive?
         raise ArgumentError,
               "#{name} must be a positive number of seconds"
+      end
+
+      value
+    end
+
+    def validate_max_retry_after(value)
+      return nil if value.nil?
+      unless value.is_a?(Numeric) && value >= 0 # NaN fails the comparison
+        raise ArgumentError, "max_retry_after must be a non-negative number of seconds"
       end
 
       value

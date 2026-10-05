@@ -42,6 +42,14 @@ module PearlPay
       last_response ? last_response.idempotent_replay? : false
     end
 
+    # Seconds from the Retry-After header as an Integer, or nil when absent or
+    # not delta-seconds. A value above the client's max_retry_after is why the
+    # SDK raised instead of retrying.
+    def retry_after
+      value = RetryPolicy.parse_retry_after(last_response && last_response.headers["retry-after"])
+      value&.ceil
+    end
+
     # Classification is by error code + HTTP status only — never message text.
     def self.classify(http_status, code)
       case http_status
@@ -82,13 +90,7 @@ module PearlPay
   class IdempotencyConflictError < ConflictError; end
   class IdempotencyInProgressError < ConflictError; end
 
-  class RateLimitError < APIError
-    # Seconds to wait before retrying, from the Retry-After header (nil if absent).
-    def retry_after
-      value = last_response && last_response.headers["retry-after"]
-      value&.to_i
-    end
-  end
+  class RateLimitError < APIError; end
 
   class UpstreamError < APIError; end
 end

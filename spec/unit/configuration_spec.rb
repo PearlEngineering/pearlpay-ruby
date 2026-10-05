@@ -12,6 +12,23 @@ RSpec.describe PearlPay::Configuration do
     expect { described_class.new(api_key: "") }.to raise_error(PearlPay::ConfigurationError)
   end
 
+  describe "max_retry_after" do
+    it "defaults to 60 and shows in #inspect" do
+      expect(config.max_retry_after).to eq(60)
+      expect(config.inspect).to include("max_retry_after=60")
+    end
+
+    it "accepts zero, fractional, and infinite values" do
+      [0, 30.5, Float::INFINITY].each { |v| expect(config(max_retry_after: v).max_retry_after).to eq(v) }
+    end
+
+    it "rejects negative, non-numeric, nil, and NaN values" do
+      [-1, "30", nil, Float::NAN].each do |v|
+        expect { config(max_retry_after: v) }.to raise_error(PearlPay::ConfigurationError, /max_retry_after/)
+      end
+    end
+  end
+
   it "is frozen after construction" do
     expect(config).to be_frozen
   end

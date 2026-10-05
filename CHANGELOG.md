@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Added `max_retry_after` (client option and per-request `opts:`, default 60s).
+  A server `Retry-After` above it now raises the underlying error
+  (`RateLimitError` / `APIError`) instead of sleeping; previously a
+  `payments.cancel` 503 could block for up to an hour per retry. Applies to any
+  retried 429/5xx. `0` raises on any `Retry-After`; `Float::INFINITY` restores
+  the old uncapped behaviour.
+- `Retry-After` is now parsed strictly as delta-seconds. Malformed values
+  (e.g. `60abc`), HTTP-dates, and zero fall back to jittered backoff.
+- `retry_after` moved from `RateLimitError` to `APIError` (so a 503 exposes it).
+  It returns `nil`, not `0`, for a malformed header — use `sleep(e.retry_after || 60)`.
+
 ## 0.4.0 — 2026-10-05
 
 - Re-vendored the OpenAPI contract from the current API (new operation

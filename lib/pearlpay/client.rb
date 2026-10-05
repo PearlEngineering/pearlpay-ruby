@@ -11,12 +11,14 @@ module PearlPay
 
     def initialize(api_key:, signing_secret: nil,
                    api_base: Configuration::DEFAULT_API_BASE,
-                   max_network_retries: 2, open_timeout: 5, read_timeout: 15,
+                   max_network_retries: 2,
+                   max_retry_after: RetryPolicy::DEFAULT_MAX_RETRY_AFTER,
+                   open_timeout: 5, read_timeout: 15,
                    instrumentation: nil, http_client: nil)
       @config = Configuration.new(
         api_key: api_key, signing_secret: signing_secret, api_base: api_base,
-        max_network_retries: max_network_retries, open_timeout: open_timeout,
-        read_timeout: read_timeout, instrumentation: instrumentation
+        max_network_retries: max_network_retries, max_retry_after: max_retry_after,
+        open_timeout: open_timeout, read_timeout: read_timeout, instrumentation: instrumentation
       )
       @requestor = Requestor.new(@config, **(http_client ? { http_client: http_client } : {}))
       @v1 = V1Services.new(@requestor)
