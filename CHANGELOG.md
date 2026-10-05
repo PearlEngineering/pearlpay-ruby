@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Re-vendored the OpenAPI contract from the current API (new operation
+  `POST /payments/{id}/cancel`, new error codes such as
+  `amount_above_threshold`, webhook rotation grace-window docs).
+- Added `client.v1.payments.cancel(id)` — cancels a still-pending payment
+  (it becomes `failed` / `cancelled_by_merchant`). Naturally idempotent, so
+  no `Idempotency-Key`. 409s (`payment_already_succeeded`,
+  `payment_in_progress`, `payment_not_cancellable`, `payment_under_review`)
+  raise; `503 status_check_unavailable` fails closed, so retry. The endpoint
+  is feature-flagged server-side and returns 404 until enabled.
+- `client.v1.webhook_endpoints.rotate_signing_secret(id, { grace_seconds: 0 })`
+  now accepts the optional body (pass a Hash; `grace_seconds: 0` revokes the previous
+  secret immediately). Still never retried.
+- `PearlPay::Webhook.verify!` accepts an optional `previous_signature:`
+  (the `X-Webhook-Signature-Previous` header sent during a secret-rotation
+  grace window); a delivery verifies if either signature matches.
+
 - The vendored OpenAPI contract (`spec/contract/openapi.yaml`) no longer
   carries the main API repo's canonical-source header, Postman/CI-job
   references, or internal-detail leaks (`bin/rails`, `ProviderCapability`,

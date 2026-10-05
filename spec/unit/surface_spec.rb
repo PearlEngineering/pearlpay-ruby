@@ -8,6 +8,7 @@ RSpec.describe "The /v1 API surface" do
     "payments.create" => ["POST", "/payments", :idempotent_transport_only, :if_configured, :required],
     "payments.retrieve" => ["GET", "/payments/{id}", :read, :never, :none],
     "payments.list" => ["GET", "/payments", :read, :never, :none],
+    "payments.cancel" => ["POST", "/payments/{id}/cancel", :natural, :never, :none],
     "disbursements.create" => ["POST", "/disbursements", :idempotent_transport_only, :required, :required],
     "disbursements.retrieve" => ["GET", "/disbursements/{id}", :read, :never, :none],
     "disbursements.list" => ["GET", "/disbursements", :read, :never, :none],

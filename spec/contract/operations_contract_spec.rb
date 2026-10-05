@@ -129,6 +129,12 @@ RSpec.describe "Operation contracts" do
         client.v1.payment_links.checkout_url(path_ids["id"], params, idempotency_key: "ck-3")
       }
     },
+    "payments.cancel" => {
+      status: 200,
+      fixture: payment_fixture.merge("status" => "failed", "message" => "Cancelled by merchant",
+                                     "failure_reason" => "cancelled_by_merchant"),
+      invoke: ->(client, _params) { client.v1.payments.cancel(path_ids["id"]) }
+    },
     "webhook_endpoints.create" => {
       status: 201,
       invoke: ->(client, params) { client.v1.webhook_endpoints.create(params) }
@@ -146,8 +152,12 @@ RSpec.describe "Operation contracts" do
       fixture: { "object" => "webhook_signing_secret",
                  "webhook_endpoint_id" => "we_9f3c8a2b1d4e5f6a7b8c9d0e",
                  "signing_secret" => "whsec_test_fixture_not_a_real_secret",
+                 "previous_secret_expires_at" => "2026-10-04T10:00:00Z",
                  "message" => "Store this secret securely; it is shown once." },
-      invoke: ->(client, _params) { client.v1.webhook_endpoints.rotate_signing_secret(path_ids["id"]) }
+      params: { "grace_seconds" => 0 },
+      invoke: lambda { |client, params|
+        client.v1.webhook_endpoints.rotate_signing_secret(path_ids["id"], params)
+      }
     },
     "api_keys.rotate_signing_secret" => {
       status: 200,

@@ -125,13 +125,28 @@ client.v1.payment_links.list(**filters)  .retrieve(id)  .update(id, params)
 client.v1.payment_links.disable(id)  .clone(id, params)
 client.v1.payment_links.checkout_url(id, params, idempotency_key:)
 client.v1.webhook_endpoints.create(params)   # response includes whsec_… exactly once
-client.v1.webhook_endpoints.list  .activate(id)  .rotate_signing_secret(id)
+client.v1.webhook_endpoints.list  .activate(id)  .rotate_signing_secret(id, { grace_seconds: 0 })  # body optional
 client.v1.api_keys.rotate_signing_secret(id)
 client.raw_request(:get, "/payments/pay_123")  # escape hatch; path is relative to /v1
 ```
 
 Every method accepts `opts:` with `idempotency_key:`, `headers:`, `open_timeout:`,
 `read_timeout:`, and `max_network_retries:`.
+
+## Cancelling a pending payment
+
+```ruby
+payment = client.v1.payments.cancel("pay_01JRXYZ1234ABCDEF")
+payment.status          # => "failed"
+payment.failure_reason  # => "cancelled_by_merchant"
+```
+
+Cancelling needs a **live** key (`sk_test_` keys get `403 test_key_not_permitted`)
+and is naturally idempotent (no `idempotency_key`). A payment the
+provider reports as paid raises with `payment_already_succeeded`; a
+`503 status_check_unavailable` fails closed, so retry. A customer can still
+pay an already-displayed QR code after cancellation, so reconcile against
+the `payment.succeeded` webhook.
 
 ## Pagination
 
@@ -159,7 +174,7 @@ page.next_cursor  # meta.next_starting_after
   payment **was created** (marked `failed`, keeping its `merchant_reference_id`) — a
   fresh attempt needs a new key *and* a new reference.
 - Reads and converge-to-state writes (`payment_links.update`/`disable`,
-  `webhook_endpoints.activate`) retry transport failures, 429, and 5xx with
+  `webhook_endpoints.activate`, `payments.cancel`) retry transport failures, 429, and 5xx with
   exponential backoff and jitter (`Retry-After` is honored).
 - `payment_links.clone`, `webhook_endpoints.create`, and both
   `rotate_signing_secret` operations are **never retried**: retries would mint
@@ -289,6 +304,7 @@ post "/webhooks/pearlpay/:tenant_id" do
     payload:   request.body.read,
     timestamp: request.env["HTTP_X_WEBHOOK_TIMESTAMP"],
     signature: request.env["HTTP_X_WEBHOOK_SIGNATURE"],
+    previous_signature: request.env["HTTP_X_WEBHOOK_SIGNATURE_PREVIOUS"], # present only during a rotation grace window
     secret:    tenant.pearlpay_webhook_secret
   )
 

@@ -13,9 +13,17 @@ module PearlPay
     # Verifies a webhook delivery and returns the event as a PearlPay::Object.
     # +payload+ must be the exact raw request body bytes — never re-parsed or
     # re-serialized JSON. Raises PearlPay::WebhookSignatureError on failure.
-    def verify!(payload:, timestamp:, signature:, secret:, tolerance: 300)
+    #
+    # +previous_signature+ is the optional X-Webhook-Signature-Previous header,
+    # sent only during a signing-secret rotation grace window (signed with the
+    # previous secret). When given, a delivery verifies if EITHER signature
+    # matches +secret+, so a verifier can keep working across a rotation
+    # whichever secret it currently holds. A malformed previous signature is
+    # ignored; the primary signature must always be well-formed.
+    def verify!(payload:, timestamp:, signature:, secret:, tolerance: 300, previous_signature: nil)
       Signature.verify!(payload: payload, timestamp: timestamp,
-                        signature: signature, secret: secret, tolerance: tolerance)
+                        signature: signature, secret: secret, tolerance: tolerance,
+                        previous_signature: previous_signature)
       data = begin
         JSON.parse(payload)
       rescue JSON::ParserError
@@ -35,7 +43,7 @@ module PearlPay
 
       module_function
 
-      def verify!(payload:, timestamp:, signature:, secret:, tolerance: 300)
+      def verify!(payload:, timestamp:, signature:, secret:, tolerance: 300, previous_signature: nil)
         malformed!("payload must be a String") unless payload.is_a?(String)
         malformed!("secret must be a non-empty String") unless secret.is_a?(String) && !secret.empty?
 
@@ -43,7 +51,8 @@ module PearlPay
         hex = parse_signature(signature)
 
         expected = OpenSSL::HMAC.hexdigest("SHA256", secret, "#{ts}.#{payload}")
-        unless secure_compare(expected, hex)
+        previous_hex = parse_previous_signature(previous_signature)
+        unless secure_compare(expected, hex) || (previous_hex && secure_compare(expected, previous_hex))
           raise WebhookSignatureError.new("webhook signature verification failed", reason: :invalid)
         end
 
@@ -72,6 +81,13 @@ module PearlPay
         hex = signature.delete_prefix(SCHEME_PREFIX)
         malformed!("signature must be v1= followed by 64 hex characters") unless hex.match?(/\A\h{64}\z/)
         hex
+      end
+
+      def parse_previous_signature(signature)
+        return nil unless signature.is_a?(String) && signature.start_with?(SCHEME_PREFIX)
+
+        hex = signature.delete_prefix(SCHEME_PREFIX)
+        hex.match?(/\A\h{64}\z/) ? hex : nil
       end
 
       # Constant-time comparison with a bytesize pre-check.

@@ -34,9 +34,12 @@ module PearlPay
         end
 
         # Never retried: rotation is destructive — a retry after a lost
-        # response would invalidate the secret just issued.
-        def rotate_signing_secret(id, opts: {})
-          request(:rotate_signing_secret, path_params: { id: id }, opts: opts)
+        # response would invalidate the secret just issued. Optional
+        # grace_seconds (0..86400) shortens how long the previous secret stays
+        # valid; pass { grace_seconds: 0 } to revoke a compromised secret
+        # immediately.
+        def rotate_signing_secret(id, params = nil, opts: {})
+          request(:rotate_signing_secret, path_params: { id: id }, params: params, opts: opts)
         end
       end
     end

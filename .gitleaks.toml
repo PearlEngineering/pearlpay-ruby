@@ -1,0 +1,15 @@
+# Extend the default ruleset; only allowlist documented placeholder values so
+# vendored-spec refreshes (which change commit hashes) don't need per-commit
+# .gitleaksignore fingerprints. Real secrets still fail the scan.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Placeholder webhook/API-key examples in the vendored OpenAPI spec and test fixtures"
+targetRules = ["generic-api-key"]
+regexTarget = "match"
+regexes = [
+  '''whsec_01JRXYZ9012MNOPQRabcdefghijklmnop(\.\.\.)?''',
+  '''whsec_test_fixture_not_a_real_secret''',
+  '''whsig_test_fixture_not_a_real_secret''',
+]

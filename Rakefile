@@ -67,6 +67,11 @@ namespace :openapi do
     # clean).
     contents = contents.gsub(%r{(?<=[(\s])/api-docs/guides/}, "https://api.pearlpay.io/api-docs/guides/")
 
+    # The SDK and this vendored contract are MIT (README, LICENSE); the source
+    # spec declares the API itself as proprietary. Keep the SDK's declaration.
+    mit_license = "  license:\n    name: MIT\n    identifier: MIT\n"
+    contents = contents.sub(/^  license:\n    name: Proprietary\n/, mit_license)
+
     target = File.expand_path("spec/contract/openapi.yaml", __dir__)
     File.write(target, contents)
     sha = Digest::SHA256.hexdigest(contents)
