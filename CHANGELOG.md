@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.0 — 2026-10-06
+
 - Added `max_retry_after` (client option and per-request `opts:`, default 60s).
   A server `Retry-After` above it now raises the underlying error
   (`RateLimitError` / `APIError`) instead of sleeping; previously a
@@ -12,8 +14,6 @@
   (e.g. `60abc`, `60.5`), HTTP-dates, and zero fall back to jittered backoff.
 - `retry_after` moved from `RateLimitError` to `APIError` (so a 503 exposes it).
   It returns `nil`, not `0`, for a malformed header — use `sleep(e.retry_after || 60)`.
-
-## 0.4.0 — 2026-10-05
 
 - Re-vendored the OpenAPI contract from the current API (new operation
   `POST /payments/{id}/cancel`, new error codes such as
