@@ -10,11 +10,11 @@ module PearlPay
     LOCAL_HOSTS = ["localhost", "127.0.0.1", "::1", "[::1]"].freeze
 
     attr_reader :api_key, :signing_secret, :api_base, :max_network_retries,
-                :open_timeout, :read_timeout, :instrumentation
+                :max_retry_after, :open_timeout, :read_timeout, :instrumentation
 
     def initialize(api_key:, signing_secret: nil, api_base: DEFAULT_API_BASE,
-                   max_network_retries: 2, open_timeout: 5, read_timeout: 15,
-                   instrumentation: nil)
+                   max_network_retries: 2, max_retry_after: RetryPolicy::DEFAULT_MAX_RETRY_AFTER,
+                   open_timeout: 5, read_timeout: 15, instrumentation: nil)
       unless api_key.is_a?(String) && !api_key.empty?
         raise ConfigurationError, "api_key is required and must be a non-empty String"
       end
@@ -24,6 +24,9 @@ module PearlPay
       unless max_network_retries.is_a?(Integer) && max_network_retries >= 0
         raise ConfigurationError, "max_network_retries must be a non-negative Integer"
       end
+      unless max_retry_after.is_a?(Numeric) && max_retry_after >= 0 # NaN fails the comparison
+        raise ConfigurationError, "max_retry_after must be a non-negative number of seconds"
+      end
       if instrumentation && !instrumentation.respond_to?(:call)
         raise ConfigurationError, "instrumentation must respond to #call"
       end
@@ -32,6 +35,7 @@ module PearlPay
       @signing_secret = signing_secret && -signing_secret
       @api_base = normalize_api_base(api_base)
       @max_network_retries = max_network_retries
+      @max_retry_after = max_retry_after
       @open_timeout = validate_timeout(:open_timeout, open_timeout)
       @read_timeout = validate_timeout(:read_timeout, read_timeout)
       @instrumentation = instrumentation
@@ -41,7 +45,7 @@ module PearlPay
     def inspect
       "#<PearlPay::Configuration api_base=#{@api_base.inspect} api_key=[REDACTED] " \
         "signing_secret=#{@signing_secret ? '[REDACTED]' : 'nil'} " \
-        "max_network_retries=#{@max_network_retries} " \
+        "max_network_retries=#{@max_network_retries} max_retry_after=#{@max_retry_after} " \
         "open_timeout=#{@open_timeout} read_timeout=#{@read_timeout}>"
     end
     alias to_s inspect

@@ -131,7 +131,7 @@ client.raw_request(:get, "/payments/pay_123")  # escape hatch; path is relative 
 ```
 
 Every method accepts `opts:` with `idempotency_key:`, `headers:`, `open_timeout:`,
-`read_timeout:`, and `max_network_retries:`.
+`read_timeout:`, `max_network_retries:`, and `max_retry_after:`.
 
 ## Cancelling a pending payment
 
@@ -144,7 +144,9 @@ payment.failure_reason  # => "cancelled_by_merchant"
 Cancelling needs a **live** key (`sk_test_` keys get `403 test_key_not_permitted`)
 and is naturally idempotent (no `idempotency_key`). A payment the
 provider reports as paid raises with `payment_already_succeeded`; a
-`503 status_check_unavailable` fails closed, so retry. A customer can still
+`503 status_check_unavailable` fails closed, so retry (the SDK does so
+automatically unless its `Retry-After` exceeds `max_retry_after`; the raised error's
+`retry_after` tells you how long the server asked you to wait). A customer can still
 pay an already-displayed QR code after cancellation, so reconcile against
 the `payment.succeeded` webhook.
 
@@ -175,7 +177,11 @@ page.next_cursor  # meta.next_starting_after
   fresh attempt needs a new key *and* a new reference.
 - Reads and converge-to-state writes (`payment_links.update`/`disable`,
   `webhook_endpoints.activate`, `payments.cancel`) retry transport failures, 429, and 5xx with
-  exponential backoff and jitter (`Retry-After` is honored).
+  exponential backoff and jitter. `Retry-After` is honored up to `max_retry_after`
+  (default 60s); a longer one raises the underlying error immediately instead of blocking
+  the thread. The cap applies to every retried 429/5xx, including the keyed creates' 429 retries.
+  `0` raises on any positive server `Retry-After` (absent or malformed ones still back off);
+  below 60 makes rate-limited (429) calls raise rather than wait; `Float::INFINITY` restores uncapped waits.
 - `payment_links.clone`, `webhook_endpoints.create`, and both
   `rotate_signing_secret` operations are **never retried**: retries would mint
   duplicates or invalidate a secret you were just shown.
@@ -186,7 +192,7 @@ page.next_cursor  # meta.next_starting_after
 begin
   client.v1.payments.create(params, idempotency_key: key)
 rescue PearlPay::RateLimitError => e
-  sleep e.retry_after
+  sleep(e.retry_after || 60)
 rescue PearlPay::InvalidRequestError => e     # 400/410/422 — incl. business declines
   e.code          # "insufficient_balance", "fraud_declined", …
   e.request_id    # include in support requests
@@ -226,6 +232,7 @@ PearlPay::Client.new(
   signing_secret:      "whsig_…",                # required for disbursements.create
   api_base:            "https://api.pearlpay.io", # origin only; the SDK owns /v1
   max_network_retries: 2,                        # transport-failure retries; 0 disables
+  max_retry_after:     60,                       # longest server Retry-After (s) to sleep on; above it, raise
   open_timeout:        5,                        # seconds
   read_timeout:        15,                       # 30 for payments.create / checkout_url
   instrumentation:     ->(event) { }             # optional

@@ -59,7 +59,8 @@ module PearlPay
       uri = build_uri(operation, query)
 
       policy = RetryPolicy.new(
-        max_retries: options.max_network_retries || @config.max_network_retries, rng: @rng
+        max_retries: options.max_network_retries || @config.max_network_retries,
+        max_retry_after: options.max_retry_after || @config.max_retry_after, rng: @rng
       )
       open_timeout = options.open_timeout || @config.open_timeout
       read_timeout = options.read_timeout || operation.read_timeout || @config.read_timeout
@@ -119,11 +120,13 @@ module PearlPay
                               idempotent_replay: api_response.idempotent_replay?,
                               error_code: envelope[:code])
 
+        retry_after = RetryPolicy.parse_retry_after(api_response.headers["retry-after"])
         case policy.response_decision(operation.retry_class, status: raw.status,
                                                              code: envelope[:code], retries_so_far: retries,
-                                                             in_progress_retries: in_progress_retries)
+                                                             in_progress_retries: in_progress_retries,
+                                                             retry_after: retry_after)
         when :retry
-          @sleeper.call(policy.delay(retries, retry_after: raw.headers && raw.headers["retry-after"]))
+          @sleeper.call(policy.delay(retries, retry_after: retry_after))
           retries += 1
         when :retry_in_progress
           @sleeper.call(policy.in_progress_delay)
